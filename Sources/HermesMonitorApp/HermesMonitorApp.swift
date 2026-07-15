@@ -14,7 +14,7 @@ enum HermesMonitorApp {
 }
 
 @MainActor
-final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
+final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panelController: FloatingPanelController?
     private var viewModel: MonitorViewModel?
     private var hotKeyController: GlobalHotKeyController?
@@ -116,11 +116,21 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
             window.title = "Hermes Monitor Settings"
             window.styleMask = [.titled, .closable]
             window.setFrameAutosaveName("HermesMonitor.Settings")
+            window.delegate = self
             settingsWindowController = NSWindowController(window: window)
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindowController?.showWindow(nil)
         settingsWindowController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closingWindow = notification.object as? NSWindow,
+              closingWindow === settingsWindowController?.window else {
+            return
+        }
+        closingWindow.contentViewController = nil
+        settingsWindowController = nil
     }
 }
 #else

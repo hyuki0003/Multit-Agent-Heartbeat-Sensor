@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 
 @MainActor
 final class MonitorViewModel: ObservableObject {

@@ -1,9 +1,13 @@
 import Foundation
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 
 struct MonitorConnectionSettings {
     let host: String
     let port: Int
     let username: String
+    let authenticationMode: SSHAuthenticationMode
     let credentialReference: SSHCredentialReference
     let knownHostsFile: URL
 
@@ -12,22 +16,23 @@ struct MonitorConnectionSettings {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) throws -> MonitorConnectionSettings {
-        let host = value(
-            environmentKey: "HERMES_MONITOR_HOST",
-            defaultsKey: "HermesMonitor.host",
-            defaults: defaults,
-            environment: environment
+        let credentialPreferences = SSHCredentialPreferenceSnapshot.resolve(
+            storedHost: defaults.string(forKey: "HermesMonitor.host"),
+            storedUsername: defaults.string(forKey: "HermesMonitor.username"),
+            storedAuthenticationMode: defaults.string(forKey: "HermesMonitor.authenticationMode"),
+            storedKeychainService: defaults.string(forKey: "HermesMonitor.keychainService"),
+            storedKeychainAccount: defaults.string(forKey: "HermesMonitor.keychainAccount"),
+            environment: environment,
+            fallbackUsername: NSUserName()
         )
-        guard let host, !host.isEmpty else {
+        let credentialSelection: SSHCredentialSelection
+        do {
+            credentialSelection = try credentialPreferences.validatedRuntimeCredentialSelection()
+        } catch SSHCredentialPreferenceValidationError.missingHost {
             throw MonitorConfigurationError.missingHost
         }
-
-        let username = value(
-            environmentKey: "HERMES_MONITOR_USERNAME",
-            defaultsKey: "HermesMonitor.username",
-            defaults: defaults,
-            environment: environment
-        ) ?? NSUserName()
+        let host = credentialPreferences.host
+        let username = credentialPreferences.username
         let portValue = value(
             environmentKey: "HERMES_MONITOR_PORT",
             defaultsKey: "HermesMonitor.port",
@@ -35,18 +40,6 @@ struct MonitorConnectionSettings {
             environment: environment
         )
         let port = portValue.flatMap(Int.init) ?? 22
-        let service = value(
-            environmentKey: "HERMES_MONITOR_KEYCHAIN_SERVICE",
-            defaultsKey: "HermesMonitor.keychainService",
-            defaults: defaults,
-            environment: environment
-        ) ?? "com.hermes.monitor.ssh"
-        let account = value(
-            environmentKey: "HERMES_MONITOR_KEYCHAIN_ACCOUNT",
-            defaultsKey: "HermesMonitor.keychainAccount",
-            defaults: defaults,
-            environment: environment
-        ) ?? "\(username)@\(host)"
         let knownHostsPath = value(
             environmentKey: "HERMES_MONITOR_KNOWN_HOSTS",
             defaultsKey: "HermesMonitor.knownHostsFile",
@@ -60,7 +53,8 @@ struct MonitorConnectionSettings {
             host: host,
             port: port,
             username: username,
-            credentialReference: SSHCredentialReference(service: service, account: account),
+            authenticationMode: credentialSelection.authenticationMode,
+            credentialReference: credentialSelection.reference,
             knownHostsFile: URL(
                 fileURLWithPath: (knownHostsPath as NSString).expandingTildeInPath
             ).standardizedFileURL
@@ -72,6 +66,7 @@ struct MonitorConnectionSettings {
             host: host,
             port: port,
             username: username,
+            authenticationMode: authenticationMode,
             credentialReference: credentialReference,
             knownHostsFile: knownHostsFile
         )

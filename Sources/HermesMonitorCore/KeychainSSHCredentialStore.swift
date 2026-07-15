@@ -4,12 +4,91 @@ import Security
 #endif
 
 public struct SSHCredential: Codable, Equatable, Sendable {
-    public let privateKey: Data
+    public let privateKey: Data?
     public let passphrase: String?
+    public let password: String?
 
     public init(privateKey: Data, passphrase: String? = nil) {
         self.privateKey = privateKey
         self.passphrase = passphrase
+        self.password = nil
+    }
+
+    public init(password: String) {
+        self.privateKey = nil
+        self.passphrase = nil
+        self.password = password
+    }
+
+    public func validate(for authenticationMode: SSHAuthenticationMode) throws {
+        switch authenticationMode {
+        case .privateKey:
+            guard let privateKey, !privateKey.isEmpty else {
+                throw SSHCredentialValidationError.emptyPrivateKey
+            }
+        case .password:
+            guard let password, !password.isEmpty else {
+                throw SSHCredentialValidationError.emptyPassword
+            }
+        }
+    }
+
+    func askPassSecret(for authenticationMode: SSHAuthenticationMode) -> String? {
+        switch authenticationMode {
+        case .privateKey:
+            guard let passphrase, !passphrase.isEmpty else { return nil }
+            return passphrase
+        case .password:
+            guard let password, !password.isEmpty else { return nil }
+            return password
+        }
+    }
+}
+
+public enum SSHCredentialValidationError: Error, Equatable, LocalizedError {
+    case emptyPrivateKey
+    case emptyPassword
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyPrivateKey:
+            return "The selected Keychain SSH private key is empty."
+        case .emptyPassword:
+            return "The selected Keychain SSH password is empty."
+        }
+    }
+}
+
+public enum SSHCredentialSaveTransaction {
+    public static func save(
+        _ credential: SSHCredential,
+        selection: SSHCredentialSelection,
+        using saveCredential: (SSHCredential, SSHCredentialReference) throws -> Void,
+        commit: (SSHCredentialSelection) -> Void
+    ) throws {
+        try credential.validate(for: selection.authenticationMode)
+        try saveCredential(credential, selection.reference)
+        commit(selection)
+    }
+}
+
+public enum SSHCredentialEditorSaveTransaction {
+    public static func save(
+        resolveSelection: () throws -> SSHCredentialSelection,
+        makeCredential: (SSHAuthenticationMode) throws -> SSHCredential,
+        using saveCredential: (SSHCredential, SSHCredentialReference) throws -> Void,
+        commit: (SSHCredentialSelection) -> Void,
+        cleanup: () -> Void
+    ) throws {
+        defer { cleanup() }
+        let selection = try resolveSelection()
+        let credential = try makeCredential(selection.authenticationMode)
+        try SSHCredentialSaveTransaction.save(
+            credential,
+            selection: selection,
+            using: saveCredential,
+            commit: commit
+        )
     }
 }
 

@@ -1,5 +1,8 @@
 import Foundation
 import UserNotifications
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 
 @MainActor
 final class TaskNotificationController: NSObject, UNUserNotificationCenterDelegate {

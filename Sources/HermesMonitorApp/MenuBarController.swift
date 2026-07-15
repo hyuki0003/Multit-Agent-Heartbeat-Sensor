@@ -1,4 +1,7 @@
 import AppKit
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 
 @MainActor
 final class MenuBarController: NSObject {

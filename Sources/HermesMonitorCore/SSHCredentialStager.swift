@@ -5,8 +5,32 @@ import Foundation
 
 struct StagedSSHCredential {
     let directory: URL
-    let identityFile: URL
+    let identityFile: URL?
     let askPassFile: URL?
+}
+
+enum SSHAskPassEnvironment {
+    static let secretKey = "HERMES_MONITOR_SSH_SECRET"
+
+    static func make(
+        base: [String: String],
+        secret: String? = nil,
+        askPassFile: URL? = nil
+    ) -> [String: String] {
+        var environment = base
+        environment.removeValue(forKey: secretKey)
+        environment.removeValue(forKey: "HERMES_MONITOR_SSH_PASSPHRASE")
+        environment.removeValue(forKey: "SSH_ASKPASS")
+        environment.removeValue(forKey: "SSH_ASKPASS_REQUIRE")
+
+        if let secret, let askPassFile {
+            environment[secretKey] = secret
+            environment["SSH_ASKPASS"] = askPassFile.path
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = "HermesMonitor"
+        }
+        return environment
+    }
 }
 
 struct SSHCredentialStager {
@@ -18,19 +42,28 @@ struct SSHCredentialStager {
         self.rootDirectory = rootDirectory ?? fileManager.temporaryDirectory
     }
 
-    func stage(_ credential: SSHCredential) throws -> StagedSSHCredential {
+    func stage(
+        _ credential: SSHCredential,
+        authenticationMode: SSHAuthenticationMode
+    ) throws -> StagedSSHCredential {
+        try credential.validate(for: authenticationMode)
+
         let directory = rootDirectory
             .appendingPathComponent("HermesMonitor-\(UUID().uuidString)", isDirectory: true)
         try createPrivateDirectory(at: directory)
 
         do {
-            let identityFile = directory.appendingPathComponent("identity")
-            try createFile(at: identityFile, data: credential.privateKey, mode: 0o600)
+            var identityFile: URL?
+            if authenticationMode == .privateKey, let privateKey = credential.privateKey {
+                let url = directory.appendingPathComponent("identity")
+                try createFile(at: url, data: privateKey, mode: 0o600)
+                identityFile = url
+            }
 
             var askPassFile: URL?
-            if let passphrase = credential.passphrase, !passphrase.isEmpty {
+            if credential.askPassSecret(for: authenticationMode) != nil {
                 let url = directory.appendingPathComponent("askpass.sh")
-                let script = "#!/bin/sh\nprintf '%s\\n' \"$HERMES_MONITOR_SSH_PASSPHRASE\"\n"
+                let script = "#!/bin/sh\nprintf '%s\\n' \"$\(SSHAskPassEnvironment.secretKey)\"\n"
                 try createFile(at: url, data: Data(script.utf8), mode: 0o700)
                 askPassFile = url
             }

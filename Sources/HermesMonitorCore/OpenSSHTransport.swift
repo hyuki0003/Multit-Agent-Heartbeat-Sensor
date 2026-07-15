@@ -16,6 +16,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     case invalidRemotePath(String)
     case processFailed(executable: String, status: Int32, output: String)
     case emptyPrivateKey
+    case emptyPassword
+    case missingAskPassHelper
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +27,10 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "\(executable) exited with status \(status): \(output)"
         case .emptyPrivateKey:
             return "The Keychain SSH private key is empty."
+        case .emptyPassword:
+            return "The Keychain SSH password is empty."
+        case .missingAskPassHelper:
+            return "The private SSH_ASKPASS helper could not be staged."
         }
     }
 }
@@ -182,32 +188,37 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
     private func runOpenSSH(
         executable: String,
         standardInput: Data?,
-        arguments: (URL) -> [String]
+        arguments: (URL?) -> [String]
     ) throws -> String {
         let credential = try credentials.credential(for: configuration.credentialReference)
-        guard !credential.privateKey.isEmpty else {
+        do {
+            try credential.validate(for: configuration.authenticationMode)
+        } catch SSHCredentialValidationError.emptyPrivateKey {
             throw OpenSSHTransportError.emptyPrivateKey
+        } catch SSHCredentialValidationError.emptyPassword {
+            throw OpenSSHTransportError.emptyPassword
         }
 
         let stager = SSHCredentialStager(fileManager: fileManager)
-        let staged = try stager.stage(credential)
+        let staged = try stager.stage(
+            credential,
+            authenticationMode: configuration.authenticationMode
+        )
         defer { stager.remove(staged) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments(staged.identityFile)
 
-        var environment = ProcessInfo.processInfo.environment
-        if let passphrase = credential.passphrase, !passphrase.isEmpty {
-            guard let askPassFile = staged.askPassFile else {
-                throw OpenSSHTransportError.emptyPrivateKey
-            }
-            environment["SSH_ASKPASS"] = askPassFile.path
-            environment["SSH_ASKPASS_REQUIRE"] = "force"
-            environment["DISPLAY"] = "HermesMonitor"
-            environment["HERMES_MONITOR_SSH_PASSPHRASE"] = passphrase
+        let askPassSecret = credential.askPassSecret(for: configuration.authenticationMode)
+        if askPassSecret != nil, staged.askPassFile == nil {
+            throw OpenSSHTransportError.missingAskPassHelper
         }
-        process.environment = environment
+        process.environment = SSHAskPassEnvironment.make(
+            base: ProcessInfo.processInfo.environment,
+            secret: askPassSecret,
+            askPassFile: staged.askPassFile
+        )
 
         let input = Pipe()
         let output = Pipe()

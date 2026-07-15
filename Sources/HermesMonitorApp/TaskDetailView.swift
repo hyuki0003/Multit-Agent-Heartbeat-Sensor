@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 
 struct TaskDetailView: View {
     let item: CorrelatedTask
