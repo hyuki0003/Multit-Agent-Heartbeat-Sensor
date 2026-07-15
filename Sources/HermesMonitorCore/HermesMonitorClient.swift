@@ -1,9 +1,33 @@
 import Foundation
 
+public struct MonitorRefreshBackoff: Equatable, Sendable {
+    private let baseDelay: TimeInterval
+    private let maximumDelay: TimeInterval
+
+    public init(baseDelay: TimeInterval, maximumDelay: TimeInterval = 300) {
+        self.baseDelay = max(0, baseDelay)
+        self.maximumDelay = max(self.baseDelay, maximumDelay)
+    }
+
+    public func delay(afterConsecutiveFailures failures: Int) -> TimeInterval {
+        let exponent = min(max(0, failures), 30)
+        return min(maximumDelay, baseDelay * pow(2, Double(exponent)))
+    }
+
+    public func delay(
+        afterConsecutiveFailures failures: Int,
+        elapsed: TimeInterval
+    ) -> TimeInterval {
+        let scheduledDelay = delay(afterConsecutiveFailures: failures)
+        guard failures <= 0 else { return scheduledDelay }
+        return max(0, scheduledDelay - max(0, elapsed))
+    }
+}
+
 public actor HermesMonitorClient {
     private let synchronizer: RemoteSnapshotSynchronizer
     private let loader: HermesSnapshotLoader
-    private var knownTaskIDs: [String] = []
+    private var knownWorkerLogTaskIDs: [String] = []
 
     public init(
         configuration: SSHConnectionConfiguration,
@@ -23,16 +47,23 @@ public actor HermesMonitorClient {
     }
 
     public func refresh() async throws -> HermesMonitorSnapshot {
-        var files = try await synchronizer.refresh(taskIDs: knownTaskIDs)
+        var files = try await synchronizer.refresh(taskIDs: knownWorkerLogTaskIDs)
         var snapshot = try loader.load(files: files)
-        let currentTaskIDs = snapshot.kanban.tasks.map(\.id).sorted()
+        let currentTaskIDs = Self.workerLogTaskIDs(for: snapshot.kanban.tasks)
 
-        if currentTaskIDs != knownTaskIDs {
-            knownTaskIDs = currentTaskIDs
+        if currentTaskIDs != knownWorkerLogTaskIDs {
+            knownWorkerLogTaskIDs = currentTaskIDs
             files = try await synchronizer.refresh(taskIDs: currentTaskIDs)
             snapshot = try loader.load(files: files)
         }
         return snapshot
+    }
+
+    static func workerLogTaskIDs(for tasks: [KanbanTask]) -> [String] {
+        tasks
+            .filter { $0.status == .running }
+            .map(\.id)
+            .sorted()
     }
 
     public nonisolated func snapshots(

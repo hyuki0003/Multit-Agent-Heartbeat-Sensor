@@ -6,6 +6,15 @@ public enum TaskNotificationKind: String, Codable, CaseIterable, Equatable, Send
     case failed
     case heartbeatStale = "heartbeat_stale"
     case created
+
+    public var playsDeathSound: Bool {
+        switch self {
+        case .completed, .failed, .heartbeatStale:
+            return true
+        case .blocked, .created:
+            return false
+        }
+    }
 }
 
 public struct TaskNotificationEvent: Equatable, Sendable {
@@ -45,7 +54,7 @@ public struct TaskNotificationPreferences: Equatable, Sendable {
         self.notifyOnNewTask = notifyOnNewTask
     }
 
-    func isEnabled(_ kind: TaskNotificationKind) -> Bool {
+    public func isEnabled(_ kind: TaskNotificationKind) -> Bool {
         switch kind {
         case .blocked: return notifyOnBlocked
         case .completed: return notifyOnCompleted
@@ -53,6 +62,10 @@ public struct TaskNotificationPreferences: Equatable, Sendable {
         case .heartbeatStale: return notifyOnHeartbeatStale
         case .created: return notifyOnNewTask
         }
+    }
+
+    public func shouldPlayDeathSound(for kind: TaskNotificationKind) -> Bool {
+        isEnabled(kind) && kind.playsDeathSound
     }
 }
 
@@ -104,10 +117,12 @@ public struct TaskNotificationDetector: Sendable {
                 continue
             }
 
-            if previous.visualStatus == .running {
+            if previous.visualStatus != current.visualStatus {
                 switch current.visualStatus {
                 case .blocked:
-                    candidates.append(event(for: task, kind: .blocked))
+                    if previous.visualStatus == .running {
+                        candidates.append(event(for: task, kind: .blocked))
+                    }
                 case .done:
                     candidates.append(event(for: task, kind: .completed))
                 case .failed:

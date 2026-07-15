@@ -80,7 +80,7 @@ struct MonitorSettingsView: View {
                 Toggle("Task becomes blocked", isOn: $notifyOnBlocked)
                 Toggle("Task completes", isOn: $notifyOnCompleted)
                 Toggle("Task fails or crashes", isOn: $notifyOnFailed)
-                Toggle("Running heartbeat exceeds 180 seconds", isOn: $notifyOnHeartbeatStale)
+                Toggle("Running heartbeat reaches 180 seconds", isOn: $notifyOnHeartbeatStale)
                 Toggle("New task appears", isOn: $notifyOnNewTask)
             }
         }

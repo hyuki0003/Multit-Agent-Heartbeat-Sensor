@@ -15,6 +15,13 @@ final class LivenessTests: XCTestCase {
             createdAt: now,
             lastHeartbeatAt: now.addingTimeInterval(-179)
         )
+        let boundary = KanbanTask(
+            id: "boundary",
+            title: "Boundary",
+            status: .running,
+            createdAt: now,
+            lastHeartbeatAt: now.addingTimeInterval(-180)
+        )
         let stale = KanbanTask(
             id: "stale",
             title: "Stale",
@@ -24,7 +31,19 @@ final class LivenessTests: XCTestCase {
         )
 
         XCTAssertFalse(fresh.isHeartbeatStale(at: now, threshold: 180))
+        XCTAssertTrue(boundary.isHeartbeatStale(at: now, threshold: 180))
         XCTAssertTrue(stale.isHeartbeatStale(at: now, threshold: 180))
+    }
+
+    func testRunningTaskWithoutHeartbeatIsReportedAsStale() {
+        let task = KanbanTask(
+            id: "missing",
+            title: "Missing",
+            status: .running,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertTrue(task.isHeartbeatStale(at: Date(timeIntervalSince1970: 10_000)))
     }
 
     func testNonRunningTaskIsNotReportedAsHeartbeatStale() {

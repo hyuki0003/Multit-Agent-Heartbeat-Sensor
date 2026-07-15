@@ -97,4 +97,30 @@ public enum OpenSSHArgumentBuilder {
         arguments += ["-b", "-", configuration.destination]
         return arguments
     }
+
+    public static func sshArguments(
+        configuration: SSHConnectionConfiguration,
+        identityFile: URL,
+        remoteCommand: String
+    ) -> [String] {
+        var arguments = [
+            "-q",
+            "-p", String(configuration.port),
+            "-i", identityFile.path,
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "PasswordAuthentication=no",
+            "-o", "KbdInteractiveAuthentication=no",
+            "-o", "NumberOfPasswordPrompts=0",
+            "-o", "BatchMode=no",
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=2"
+        ]
+        if let knownHostsFile = configuration.knownHostsFile {
+            arguments += ["-o", "UserKnownHostsFile=\(knownHostsFile.path)"]
+        }
+        arguments += [configuration.destination, remoteCommand]
+        return arguments
+    }
 }

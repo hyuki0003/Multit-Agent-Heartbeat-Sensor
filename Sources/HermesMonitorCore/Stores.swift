@@ -65,9 +65,7 @@ public struct KanbanStore: Sendable {
             """
         ) { row in
             let statusValue = try row.requiredString(3)
-            guard let status = TaskRunStatus(rawValue: statusValue) else {
-                throw SQLiteStoreError.invalidValue(column: 3, value: statusValue)
-            }
+            let status = TaskRunStatus(rawValue: statusValue) ?? .unknown
             let outcome: TaskRunOutcome?
             if let value = row.optionalString(8) {
                 guard let parsed = TaskRunOutcome(rawValue: value) else {

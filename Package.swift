@@ -25,6 +25,7 @@ let package = Package(
             name: "HermesMonitorApp",
             dependencies: ["HermesMonitorCore"],
             linkerSettings: [
+                .linkedFramework("AVFoundation", .when(platforms: [.macOS])),
                 .linkedFramework("Carbon", .when(platforms: [.macOS])),
                 .linkedFramework("UserNotifications", .when(platforms: [.macOS]))
             ]

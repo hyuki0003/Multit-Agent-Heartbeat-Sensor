@@ -5,14 +5,17 @@ import UserNotifications
 @MainActor
 final class TaskNotificationController: NSObject, UNUserNotificationCenterDelegate {
     private let center: UNUserNotificationCenter
+    private let soundPlayer: any DeathSoundPlaying
     private let onTaskSelected: (String) -> Void
     private var detector = TaskNotificationDetector(deduplicationWindow: 60)
 
     init(
         center: UNUserNotificationCenter = .current(),
+        soundPlayer: any DeathSoundPlaying = DeathSoundPlayer(),
         onTaskSelected: @escaping (String) -> Void
     ) {
         self.center = center
+        self.soundPlayer = soundPlayer
         self.onTaskSelected = onTaskSelected
         super.init()
         center.delegate = self
@@ -34,6 +37,9 @@ final class TaskNotificationController: NSObject, UNUserNotificationCenterDelega
             preferences: preferences
         )
         for event in events {
+            if preferences.shouldPlayDeathSound(for: event.kind) {
+                soundPlayer.playDeathSound()
+            }
             deliver(event)
         }
     }
@@ -42,7 +48,7 @@ final class TaskNotificationController: NSObject, UNUserNotificationCenterDelega
         let content = UNMutableNotificationContent()
         content.title = event.taskTitle
         content.body = body(for: event.kind)
-        content.sound = .default
+        content.sound = event.kind.playsDeathSound ? nil : .default
         content.userInfo = ["taskID": event.taskID]
 
         let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
@@ -59,7 +65,7 @@ final class TaskNotificationController: NSObject, UNUserNotificationCenterDelega
         case .failed:
             return "The running task failed or crashed."
         case .heartbeatStale:
-            return "The running task heartbeat is more than 180 seconds old."
+            return "The running task heartbeat is at least 180 seconds old."
         case .created:
             return "A new Hermes task was created."
         }

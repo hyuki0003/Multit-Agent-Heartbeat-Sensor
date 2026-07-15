@@ -62,6 +62,12 @@ public final class ReadOnlySQLiteDatabase: @unchecked Sendable {
         }
     }
 
+    public func quickCheck() throws -> [String] {
+        try query("PRAGMA quick_check") { row in
+            try row.requiredString(0)
+        }
+    }
+
     func query<T>(
         _ sql: String,
         bindings: [SQLiteBinding] = [],

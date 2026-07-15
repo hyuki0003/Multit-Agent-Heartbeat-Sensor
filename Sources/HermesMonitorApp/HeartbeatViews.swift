@@ -5,23 +5,42 @@ import HermesMonitorCore
 struct HeartbeatIndicator: View {
     let item: CorrelatedTask
     let liveness: TaskLivenessState
+    @State private var beatScale: CGFloat = 1
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !shouldAnimate)) { timeline in
-            Image(systemName: symbolName)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(heartColor)
-                .scaleEffect(scale(at: timeline.date))
-                .shadow(color: heartColor.opacity(0.45), radius: liveness == .fresh ? 5 : 0)
-        }
-        .accessibilityLabel("Heartbeat \(liveness.displayName.lowercased())")
+        heart
+            .scaleEffect(beatScale)
+            .onChange(of: item.task.lastHeartbeatAt) { timestamp in
+                guard timestamp != nil,
+                      presentation.heartMotion == .beatOnHeartbeatUpdate else { return }
+                withAnimation(.easeOut(duration: 0.08)) {
+                    beatScale = 1.24
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    withAnimation(.easeIn(duration: 0.16)) {
+                        beatScale = 1
+                    }
+                }
+            }
+            .onChange(of: presentation.heartMotion) { motion in
+                if motion == .none {
+                    beatScale = 1
+                }
+            }
+            .accessibilityLabel("Heartbeat")
+            .accessibilityValue(Text("\(item.visualStatus.displayName), \(liveness.displayName)"))
+    }
+    private var heart: some View {
+        Image(systemName: symbolName)
+            .font(.system(size: 18, weight: .bold))
+            .foregroundStyle(heartColor)
+            .shadow(color: heartColor.opacity(0.45), radius: liveness == .fresh ? 5 : 0)
     }
 
-    private var shouldAnimate: Bool {
-        (item.visualStatus == .running && liveness == .fresh) ||
-            item.visualStatus == .done ||
-            item.visualStatus == .archived
+    private var presentation: TaskHeartbeatPresentation {
+        TaskHeartbeatPresentation(status: item.visualStatus, liveness: liveness)
     }
+
 
     private var symbolName: String {
         switch item.visualStatus {
@@ -37,32 +56,12 @@ struct HeartbeatIndicator: View {
     }
 
     private var heartColor: Color {
-        if item.visualStatus == .running {
-            return liveness == .fresh ? .green : .gray
-        }
-        if item.visualStatus == .done || item.visualStatus == .archived {
-            return .green
-        }
-        return item.visualStatus.color
-    }
-
-    private func scale(at date: Date) -> CGFloat {
-        if item.visualStatus == .done || item.visualStatus == .archived {
-            let phase = date.timeIntervalSinceReferenceDate * .pi / 1.4
-            return 1 + CGFloat((sin(phase) + 1) * 0.035)
-        }
-
-        guard item.visualStatus == .running, liveness == .fresh else { return 1 }
-        let anchor = item.task.lastHeartbeatAt ?? date
-        let elapsed = max(0, date.timeIntervalSince(anchor))
-        let phase = elapsed.truncatingRemainder(dividingBy: 1)
-        switch phase {
-        case 0..<0.10:
-            return 1 + CGFloat(sin(phase / 0.10 * .pi)) * 0.30
-        case 0.16..<0.25:
-            return 1 + CGFloat(sin((phase - 0.16) / 0.09 * .pi)) * 0.16
-        default:
-            return 1
+        switch presentation.heartTone {
+        case .healthy: return .green
+        case .stale, .blocked: return .yellow
+        case .dead: return .red
+        case .completed: return .green
+        case .inactive: return .secondary
         }
     }
 }
@@ -95,19 +94,21 @@ struct ECGWaveformView: View {
     }
 
     private var isAnimated: Bool {
-        status == .running && (liveness == .fresh || liveness == .stale)
+        presentation.waveformMotion != .flatline
+    }
+
+    private var presentation: TaskHeartbeatPresentation {
+        TaskHeartbeatPresentation(status: status, liveness: liveness)
     }
 
     private var traceColor: Color {
-        if status == .done || status == .archived { return .blue }
-        if status == .running {
-            switch liveness {
-            case .fresh: return .green
-            case .stale: return .yellow
-            case .dead, .inactive: return .gray
-            }
+        switch presentation.heartTone {
+        case .healthy: return .green
+        case .stale, .blocked: return .yellow
+        case .dead: return .red
+        case .completed: return .blue
+        case .inactive: return .secondary
         }
-        return status == .failed ? .red : .gray
     }
 
     private func drawGrid(context: inout GraphicsContext, size: CGSize) {
@@ -139,7 +140,18 @@ struct ECGWaveformView: View {
         for x in stride(from: CGFloat.zero, through: size.width, by: 1.5) {
             let rawCycle = Double(x) / period + phase
             let cycle = rawCycle - floor(rawCycle)
-            let sample = ecgSample(cycle)
+            let sample: CGFloat
+            switch presentation.waveformMotion {
+            case .continuous:
+                sample = ecgSample(cycle)
+            case .occasionalBlip:
+                sample = blockedBlipSample(
+                    x: x / max(1, size.width),
+                    time: date.timeIntervalSinceReferenceDate
+                )
+            case .flatline:
+                sample = 0
+            }
             let y = centerY - sample * size.height * 0.38 * amplitude
             if x == 0 {
                 path.move(to: CGPoint(x: x, y: y))
@@ -151,17 +163,38 @@ struct ECGWaveformView: View {
     }
 
     private func amplitude(at date: Date) -> CGFloat {
-        guard status == .running else { return 0 }
-        switch liveness {
-        case .fresh:
-            return CGFloat(min(1, max(0, date.timeIntervalSince(appearedAt) / 1.2)))
-        case .stale:
-            guard let lastHeartbeatAt else { return 0 }
-            let age = max(60, date.timeIntervalSince(lastHeartbeatAt))
-            return CGFloat(min(1, max(0, (180 - age) / 120)))
-        case .dead, .inactive:
+        switch presentation.waveformMotion {
+        case .flatline:
             return 0
+        case .occasionalBlip:
+            return 0.65
+        case .continuous:
+            switch liveness {
+            case .fresh:
+                return CGFloat(min(1, max(0, date.timeIntervalSince(appearedAt) / 1.2)))
+            case .stale:
+                guard let lastHeartbeatAt else { return 0 }
+                let age = max(TaskLivenessThresholds.staleAfter, date.timeIntervalSince(lastHeartbeatAt))
+                let staleDuration = TaskLivenessThresholds.deadAfter - TaskLivenessThresholds.staleAfter
+                return CGFloat(min(1, max(0, (TaskLivenessThresholds.deadAfter - age) / staleDuration)))
+            case .dead, .inactive:
+                return 0
+            }
         }
+    }
+
+    private func blockedBlipSample(x: CGFloat, time: TimeInterval) -> CGFloat {
+        let cycleDuration: TimeInterval = 4
+        let center = CGFloat(time.truncatingRemainder(dividingBy: cycleDuration) / cycleDuration)
+        let distance = x - center
+        guard abs(distance) <= 0.04 else { return 0 }
+
+        let phase = (distance + 0.04) / 0.08
+        if phase < 0.25 { return 0.12 * sin(phase / 0.25 * .pi) }
+        if phase < 0.42 { return -0.18 * ((phase - 0.25) / 0.17) }
+        if phase < 0.55 { return -0.18 + 1.18 * ((phase - 0.42) / 0.13) }
+        if phase < 0.68 { return 1.0 - 1.28 * ((phase - 0.55) / 0.13) }
+        return -0.28 + 0.28 * ((phase - 0.68) / 0.32)
     }
 
     private func ecgSample(_ phase: Double) -> CGFloat {

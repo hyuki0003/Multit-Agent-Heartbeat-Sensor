@@ -141,7 +141,7 @@ struct TaskCardView: View {
 
             if showsLog, !logLines.isEmpty {
                 ScrollView(.horizontal, showsIndicators: true) {
-                    Text(logLines.suffix(12).joined(separator: "\n"))
+                    Text(logLines.suffix(5).joined(separator: "\n"))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.green.opacity(0.9))
                         .textSelection(.enabled)
@@ -194,7 +194,12 @@ struct TaskCardView: View {
             case .inactive: break
             }
         }
-        return item.visualStatus.color
+        switch item.visualStatus {
+        case .blocked: return .yellow
+        case .done: return .blue
+        case .failed: return .red
+        case .todo, .ready, .running, .archived: return item.visualStatus.color
+        }
     }
 
     private func cardTintOpacity(_ liveness: TaskLivenessState) -> Double {

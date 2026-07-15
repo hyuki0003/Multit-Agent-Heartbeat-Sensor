@@ -47,11 +47,27 @@ final class MonitorViewModel: ObservableObject {
     ) {
         guard monitoringTask == nil else { return }
         monitoringTask = Task { [weak self] in
+            var consecutiveFailures = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
-                let seconds = min(max(interval(), 2), 300)
-                let nanoseconds = UInt64(seconds * 1_000_000_000)
+                let refreshStartedAt = Date()
+                let succeeded = await self.performRefresh()
+                consecutiveFailures = succeeded ? 0 : consecutiveFailures + 1
+                let baseInterval = min(max(interval(), 2), 300)
+                let backoff = MonitorRefreshBackoff(
+                    baseDelay: baseInterval,
+                    maximumDelay: 300
+                )
+                let elapsed = Date().timeIntervalSince(refreshStartedAt)
+                let delay = backoff.delay(
+                    afterConsecutiveFailures: consecutiveFailures,
+                    elapsed: elapsed
+                )
+                let nanoseconds = UInt64(delay * 1_000_000_000)
+                if nanoseconds == 0 {
+                    await Task.yield()
+                    continue
+                }
                 do {
                     try await Task.sleep(nanoseconds: nanoseconds)
                 } catch {
@@ -67,11 +83,15 @@ final class MonitorViewModel: ObservableObject {
     }
 
     func refresh() async {
+        _ = await performRefresh()
+    }
+
+    private func performRefresh() async -> Bool {
         guard let client else {
             connectionState = .disconnected
-            return
+            return false
         }
-        guard !isRefreshing else { return }
+        guard !isRefreshing else { return true }
         isRefreshing = true
         if snapshot == nil {
             connectionState = .connecting
@@ -86,9 +106,11 @@ final class MonitorViewModel: ObservableObject {
             connectionState = .connected
             errorMessage = persistentErrorMessage
             onSnapshot?(presentedSnapshot)
+            return true
         } catch {
             connectionState = .failed
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

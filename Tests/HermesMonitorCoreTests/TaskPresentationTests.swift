@@ -5,11 +5,39 @@ final class TaskPresentationTests: XCTestCase {
     func testRunningLivenessUsesFreshStaleAndDeadThresholds() {
         let now = Date(timeIntervalSince1970: 1_000)
 
-        XCTAssertEqual(makeTask(id: "fresh", heartbeatAge: 59, now: now).liveness(at: now), .fresh)
-        XCTAssertEqual(makeTask(id: "stale", heartbeatAge: 60, now: now).liveness(at: now), .stale)
+        XCTAssertEqual(makeTask(id: "fresh", heartbeatAge: 120, now: now).liveness(at: now), .fresh)
+        XCTAssertEqual(makeTask(id: "stale", heartbeatAge: 120.001, now: now).liveness(at: now), .stale)
         XCTAssertEqual(makeTask(id: "edge", heartbeatAge: 179, now: now).liveness(at: now), .stale)
         XCTAssertEqual(makeTask(id: "dead", heartbeatAge: 180, now: now).liveness(at: now), .dead)
         XCTAssertEqual(makeTask(id: "missing", heartbeatAge: nil, now: now).liveness(at: now), .dead)
+    }
+
+    func testHeartbeatPresentationMatchesStatusAnimationContract() {
+        let fresh = TaskHeartbeatPresentation(status: .running, liveness: .fresh)
+        XCTAssertEqual(fresh.heartTone, .healthy)
+        XCTAssertEqual(fresh.heartMotion, .beatOnHeartbeatUpdate)
+        XCTAssertEqual(fresh.waveformMotion, .continuous)
+
+        let stale = TaskHeartbeatPresentation(status: .running, liveness: .stale)
+        XCTAssertEqual(stale.heartTone, .stale)
+        XCTAssertEqual(stale.heartMotion, .beatOnHeartbeatUpdate)
+        XCTAssertEqual(stale.waveformMotion, .continuous)
+
+        let dead = TaskHeartbeatPresentation(status: .running, liveness: .dead)
+        XCTAssertEqual(dead.heartTone, .dead)
+        XCTAssertEqual(dead.heartMotion, .none)
+        XCTAssertEqual(dead.waveformMotion, .flatline)
+
+        let blocked = TaskHeartbeatPresentation(status: .blocked, liveness: .inactive)
+        XCTAssertEqual(blocked.heartTone, .blocked)
+        XCTAssertEqual(blocked.heartMotion, .none)
+        XCTAssertEqual(blocked.waveformMotion, .occasionalBlip)
+
+        for status in [TaskVisualStatus.done, .archived] {
+            let completed = TaskHeartbeatPresentation(status: status, liveness: .inactive)
+            XCTAssertEqual(completed.heartMotion, .none)
+            XCTAssertEqual(completed.waveformMotion, .flatline)
+        }
     }
 
     func testNonRunningTaskLivenessIsInactive() {

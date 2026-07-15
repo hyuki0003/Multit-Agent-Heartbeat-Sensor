@@ -17,18 +17,89 @@ public enum TaskVisualStatus: String, Codable, CaseIterable, Equatable, Sendable
     case failed
 }
 
+public enum TaskLivenessThresholds {
+    public static let staleAfter: TimeInterval = 120
+    public static let deadAfter: TimeInterval = 180
+}
+
+public enum HeartbeatTone: String, Codable, Equatable, Sendable {
+    case inactive
+    case healthy
+    case stale
+    case dead
+    case blocked
+    case completed
+}
+
+public enum HeartbeatMotion: String, Codable, Equatable, Sendable {
+    case none
+    case beatOnHeartbeatUpdate
+}
+
+public enum ECGWaveformMotion: String, Codable, Equatable, Sendable {
+    case flatline
+    case continuous
+    case occasionalBlip
+}
+
+public struct TaskHeartbeatPresentation: Equatable, Sendable {
+    public let heartTone: HeartbeatTone
+    public let heartMotion: HeartbeatMotion
+    public let waveformMotion: ECGWaveformMotion
+
+    public init(status: TaskVisualStatus, liveness: TaskLivenessState) {
+        switch status {
+        case .running:
+            switch liveness {
+            case .fresh:
+                heartTone = .healthy
+                heartMotion = .beatOnHeartbeatUpdate
+                waveformMotion = .continuous
+            case .stale:
+                heartTone = .stale
+                heartMotion = .beatOnHeartbeatUpdate
+                waveformMotion = .continuous
+            case .dead:
+                heartTone = .dead
+                heartMotion = .none
+                waveformMotion = .flatline
+            case .inactive:
+                heartTone = .inactive
+                heartMotion = .none
+                waveformMotion = .flatline
+            }
+        case .blocked:
+            heartTone = .blocked
+            heartMotion = .none
+            waveformMotion = .occasionalBlip
+        case .done, .archived:
+            heartTone = .completed
+            heartMotion = .none
+            waveformMotion = .flatline
+        case .failed:
+            heartTone = .dead
+            heartMotion = .none
+            waveformMotion = .flatline
+        case .todo, .ready:
+            heartTone = .inactive
+            heartMotion = .none
+            waveformMotion = .flatline
+        }
+    }
+}
+
 public extension KanbanTask {
     func liveness(
         at now: Date = Date(),
-        staleAfter: TimeInterval = 60,
-        deadAfter: TimeInterval = 180
+        staleAfter: TimeInterval = TaskLivenessThresholds.staleAfter,
+        deadAfter: TimeInterval = TaskLivenessThresholds.deadAfter
     ) -> TaskLivenessState {
         guard status == .running else { return .inactive }
         guard let lastHeartbeatAt else { return .dead }
 
         let age = max(0, now.timeIntervalSince(lastHeartbeatAt))
         if age >= deadAfter { return .dead }
-        if age >= staleAfter { return .stale }
+        if age > staleAfter { return .stale }
         return .fresh
     }
 }
@@ -55,7 +126,7 @@ private extension TaskRun {
         switch status {
         case .crashed, .timedOut, .failed:
             return true
-        case .running, .done, .blocked, .released:
+        case .running, .done, .completed, .blocked, .released, .unknown:
             break
         }
 

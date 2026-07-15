@@ -12,11 +12,13 @@ public enum KanbanTaskStatus: String, Codable, CaseIterable, Sendable {
 public enum TaskRunStatus: String, Codable, CaseIterable, Sendable {
     case running
     case done
+    case completed
     case blocked
     case crashed
     case timedOut = "timed_out"
     case failed
     case released
+    case unknown
 }
 
 public enum TaskRunOutcome: String, Codable, CaseIterable, Sendable {
@@ -90,8 +92,9 @@ public struct KanbanTask: Identifiable, Codable, Equatable, Sendable {
     }
 
     public func isHeartbeatStale(at now: Date = Date(), threshold: TimeInterval = 180) -> Bool {
-        guard status == .running, let lastHeartbeatAt else { return false }
-        return now.timeIntervalSince(lastHeartbeatAt) > threshold
+        guard status == .running else { return false }
+        guard let lastHeartbeatAt else { return true }
+        return now.timeIntervalSince(lastHeartbeatAt) >= threshold
     }
 }
 

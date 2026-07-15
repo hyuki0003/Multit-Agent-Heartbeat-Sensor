@@ -36,6 +36,33 @@ final class ReadOnlySQLiteTests: XCTestCase {
         XCTAssertThrowsError(try database.query("DELETE FROM tasks") { _ in 0 })
     }
 
+    func testLoadsLiveLegacyAndUnknownFutureRunStatuses() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("run-statuses-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        try createRunStatusFixture(at: databaseURL)
+
+        let database = try ReadOnlySQLiteDatabase(url: databaseURL)
+        let runs = try KanbanStore(database: database).loadRuns()
+
+        XCTAssertEqual(
+            runs.map(\.status),
+            [.running, .blocked, .completed, .crashed, .done, .unknown]
+        )
+    }
+
+    func testLoadsOptInLiveKanbanSnapshotReadOnly() throws {
+        guard let path = ProcessInfo.processInfo.environment["HERMES_MONITOR_LIVE_DB"] else {
+            throw XCTSkip("Set HERMES_MONITOR_LIVE_DB to run the live read-only compatibility check")
+        }
+
+        let database = try ReadOnlySQLiteDatabase(url: URL(fileURLWithPath: path))
+        let snapshot = try KanbanStore(database: database).loadSnapshot()
+
+        XCTAssertFalse(snapshot.tasks.isEmpty)
+        XCTAssertTrue(snapshot.runs.contains { $0.status == .completed })
+    }
+
     private func createKanbanFixture(at url: URL) throws {
         var handle: OpaquePointer?
         guard sqlite3_open(url.path, &handle) == SQLITE_OK, let handle else {
@@ -73,6 +100,34 @@ final class ReadOnlySQLiteTests: XCTestCase {
         INSERT INTO task_events VALUES (1, 't_1', 7, 'heartbeat', '{}', 110);
         INSERT INTO task_comments VALUES (1, 't_1', 'astra', 'go', 100);
         INSERT INTO task_links VALUES ('t_parent', 't_1');
+        """
+        var error: UnsafeMutablePointer<CChar>?
+        guard sqlite3_exec(handle, sql, nil, nil, &error) == SQLITE_OK else {
+            let message = error.map { String(cString: $0) } ?? "unknown fixture error"
+            if let error { sqlite3_free(error) }
+            throw NSError(domain: "fixture", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
+
+    private func createRunStatusFixture(at url: URL) throws {
+        var handle: OpaquePointer?
+        guard sqlite3_open(url.path, &handle) == SQLITE_OK, let handle else {
+            throw NSError(domain: "fixture", code: 1)
+        }
+        defer { sqlite3_close(handle) }
+        let sql = """
+        CREATE TABLE task_runs (
+          id INTEGER, task_id TEXT, profile TEXT, status TEXT, worker_pid INTEGER,
+          last_heartbeat_at INTEGER, started_at INTEGER, ended_at INTEGER, outcome TEXT,
+          summary TEXT, metadata TEXT, error TEXT
+        );
+        INSERT INTO task_runs VALUES
+          (1, 't_1', 'rune', 'running', NULL, NULL, 101, NULL, NULL, NULL, NULL, NULL),
+          (2, 't_1', 'rune', 'blocked', NULL, NULL, 102, 103, 'blocked', NULL, NULL, NULL),
+          (3, 't_1', 'rune', 'completed', NULL, NULL, 104, 105, 'completed', NULL, NULL, NULL),
+          (4, 't_1', 'rune', 'crashed', NULL, NULL, 106, 107, 'crashed', NULL, NULL, NULL),
+          (5, 't_1', 'rune', 'done', NULL, NULL, 108, 109, 'completed', NULL, NULL, NULL),
+          (6, 't_1', 'rune', 'future_success', NULL, NULL, 110, 111, NULL, NULL, NULL, NULL);
         """
         var error: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(handle, sql, nil, nil, &error) == SQLITE_OK else {

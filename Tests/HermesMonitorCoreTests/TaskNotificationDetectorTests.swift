@@ -46,6 +46,22 @@ final class TaskNotificationDetectorTests: XCTestCase {
         XCTAssertEqual(events.map(\.kind), [.completed])
     }
 
+    func testBlockedToDoneProducesCompletedEvent() {
+        var detector = TaskNotificationDetector()
+        let now = Date(timeIntervalSince1970: 1_000)
+        _ = detector.events(
+            for: snapshot([correlatedTask(id: "done", status: .blocked, now: now)], at: now),
+            at: now
+        )
+
+        let events = detector.events(
+            for: snapshot([correlatedTask(id: "done", status: .done, now: now)], at: now),
+            at: now.addingTimeInterval(10)
+        )
+
+        XCTAssertEqual(events.map(\.kind), [.completed])
+    }
+
     func testFailedCurrentRunProducesFailedEvent() {
         var detector = TaskNotificationDetector()
         let now = Date(timeIntervalSince1970: 1_000)
@@ -91,7 +107,7 @@ final class TaskNotificationDetectorTests: XCTestCase {
             at: baseline
         )
 
-        let staleTime = baseline.addingTimeInterval(11)
+        let staleTime = baseline.addingTimeInterval(10)
         let staleSnapshot = snapshot([
             correlatedTask(
                 id: "stale",
@@ -103,6 +119,52 @@ final class TaskNotificationDetectorTests: XCTestCase {
 
         XCTAssertEqual(detector.events(for: staleSnapshot, at: staleTime).map(\.kind), [.heartbeatStale])
         XCTAssertTrue(detector.events(for: staleSnapshot, at: staleTime.addingTimeInterval(10)).isEmpty)
+    }
+
+    func testNormalRunningProgressDoesNotProduceNotification() {
+        var detector = TaskNotificationDetector()
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        establishRunningBaseline(in: &detector, id: "progress", now: baseline)
+
+        let current = baseline.addingTimeInterval(10)
+        let events = detector.events(
+            for: snapshot([
+                correlatedTask(
+                    id: "progress",
+                    status: .running,
+                    now: current,
+                    heartbeat: current.addingTimeInterval(-1)
+                )
+            ], at: current),
+            at: current
+        )
+
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func testOnlyTerminalNotificationKindsPlayDeathSound() {
+        XCTAssertTrue(TaskNotificationKind.completed.playsDeathSound)
+        XCTAssertTrue(TaskNotificationKind.failed.playsDeathSound)
+        XCTAssertTrue(TaskNotificationKind.heartbeatStale.playsDeathSound)
+        XCTAssertFalse(TaskNotificationKind.blocked.playsDeathSound)
+        XCTAssertFalse(TaskNotificationKind.created.playsDeathSound)
+    }
+
+    func testDeathSoundObeysCorrespondingNotificationPreference() {
+        let defaults = TaskNotificationPreferences()
+        XCTAssertTrue(defaults.shouldPlayDeathSound(for: .completed))
+        XCTAssertTrue(defaults.shouldPlayDeathSound(for: .failed))
+        XCTAssertTrue(defaults.shouldPlayDeathSound(for: .heartbeatStale))
+        XCTAssertFalse(defaults.shouldPlayDeathSound(for: .blocked))
+
+        let disabled = TaskNotificationPreferences(
+            notifyOnCompleted: false,
+            notifyOnFailed: false,
+            notifyOnHeartbeatStale: false
+        )
+        XCTAssertFalse(disabled.shouldPlayDeathSound(for: .completed))
+        XCTAssertFalse(disabled.shouldPlayDeathSound(for: .failed))
+        XCTAssertFalse(disabled.shouldPlayDeathSound(for: .heartbeatStale))
     }
 
     func testNewTaskNotificationIsOptional() {

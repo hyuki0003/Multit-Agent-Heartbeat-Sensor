@@ -84,10 +84,10 @@ struct TaskDetailView: View {
     private func runColor(_ run: TaskRun) -> Color {
         switch run.status {
         case .running: return .blue
-        case .done: return .green
+        case .done, .completed: return .green
         case .blocked: return .orange
         case .crashed, .timedOut, .failed: return .red
-        case .released: return .secondary
+        case .released, .unknown: return .secondary
         }
     }
 }

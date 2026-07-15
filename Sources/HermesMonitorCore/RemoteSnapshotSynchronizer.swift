@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public struct RemoteSnapshotFiles: Equatable, Sendable {
     public let kanbanDatabase: URL
@@ -24,16 +29,21 @@ public struct RemoteSnapshotFiles: Equatable, Sendable {
 
 public enum SnapshotSynchronizerError: Error, LocalizedError {
     case remoteFileChangedRepeatedly(String)
+    case invalidDatabaseSnapshot(path: String, reason: String)
 
     public var errorDescription: String? {
         switch self {
         case .remoteFileChangedRepeatedly(let path):
             return "Remote file changed during two consecutive SFTP downloads: \(path)"
+        case .invalidDatabaseSnapshot(let path, let reason):
+            return "Downloaded SQLite snapshot failed validation for \(path): \(reason)"
         }
     }
 }
 
 public actor RemoteSnapshotSynchronizer {
+    private static let workerLogByteLimit = 64 * 1_024
+
     private let transport: any RemoteFileTransport
     private let localDirectory: URL
     private let pathPolicy: RemotePathPolicy
@@ -70,17 +80,27 @@ public actor RemoteSnapshotSynchronizer {
             remotePath: RemotePathPolicy.stateDatabase,
             destination: stateURL
         )
-
         var logFiles: [String: URL] = [:]
         var warnings: [String] = []
         for taskID in Set(taskIDs).sorted() {
             do {
                 let remotePath = try pathPolicy.workerLogPath(taskID: taskID)
                 let destination = logsDirectory.appendingPathComponent("\(taskID).log")
-                try await synchronize(remotePath: remotePath, destination: destination)
-                logFiles[taskID] = destination
+                do {
+                    try await synchronize(
+                        remotePath: remotePath,
+                        destination: destination,
+                        tailByteLimit: Self.workerLogByteLimit
+                    )
+                    logFiles[taskID] = destination
+                } catch {
+                    warnings.append("Could not refresh log for \(taskID): \(error.localizedDescription)")
+                    if fileManager.fileExists(atPath: destination.path) {
+                        logFiles[taskID] = destination
+                    }
+                }
             } catch {
-                warnings.append("Could not refresh log for \(taskID): \(error.localizedDescription)")
+                warnings.append("Rejected log path for \(taskID): \(error.localizedDescription)")
             }
         }
 
@@ -119,7 +139,8 @@ public actor RemoteSnapshotSynchronizer {
     private func synchronize(
         remotePath: String,
         destination: URL,
-        alwaysDownload: Bool = false
+        alwaysDownload: Bool = false,
+        tailByteLimit: Int? = nil
     ) async throws {
         var before = try await transport.metadata(for: remotePath)
         if !alwaysDownload,
@@ -132,13 +153,22 @@ public actor RemoteSnapshotSynchronizer {
             let partial = destination.deletingLastPathComponent()
                 .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
             defer { try? fileManager.removeItem(at: partial) }
-            try await transport.download(remotePath: remotePath, to: partial)
+            if let tailByteLimit {
+                try await transport.downloadTail(
+                    remotePath: remotePath,
+                    to: partial,
+                    byteLimit: tailByteLimit
+                )
+            } else {
+                try await transport.download(remotePath: remotePath, to: partial)
+            }
             let after = try await transport.metadata(for: remotePath)
             guard before == after else {
                 before = after
                 continue
             }
 
+            try validateDatabaseSnapshotIfNeeded(at: partial, remotePath: remotePath)
             try install(partial: partial, destination: destination)
             synchronizedMetadata[remotePath] = after
             return
@@ -146,13 +176,47 @@ public actor RemoteSnapshotSynchronizer {
         throw SnapshotSynchronizerError.remoteFileChangedRepeatedly(remotePath)
     }
 
-    private func install(partial: URL, destination: URL) throws {
-        if fileManager.fileExists(atPath: destination.path) {
-            _ = try fileManager.replaceItemAt(destination, withItemAt: partial)
-        } else {
-            try fileManager.moveItem(at: partial, to: destination)
+    private func validateDatabaseSnapshotIfNeeded(at url: URL, remotePath: String) throws {
+        guard remotePath == RemotePathPolicy.kanbanDatabase ||
+                remotePath == RemotePathPolicy.stateDatabase else {
+            return
+        }
+        do {
+            let results = try ReadOnlySQLiteDatabase(url: url).quickCheck()
+            guard results == ["ok"] else {
+                throw SnapshotSynchronizerError.invalidDatabaseSnapshot(
+                    path: remotePath,
+                    reason: results.joined(separator: "; ")
+                )
+            }
+        } catch let error as SnapshotSynchronizerError {
+            throw error
+        } catch {
+            throw SnapshotSynchronizerError.invalidDatabaseSnapshot(
+                path: remotePath,
+                reason: error.localizedDescription
+            )
         }
     }
+
+    private func install(partial: URL, destination: URL) throws {
+        let status = partial.path.withCString { source in
+            destination.path.withCString { target in
+                atomicRename(source, target)
+            }
+        }
+        guard status == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+}
+
+private func atomicRename(_ source: UnsafePointer<CChar>, _ target: UnsafePointer<CChar>) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.rename(source, target)
+    #elseif canImport(Glibc)
+    Glibc.rename(source, target)
+    #endif
 }
 
 public struct HermesMonitorSnapshot: Equatable, Sendable {
