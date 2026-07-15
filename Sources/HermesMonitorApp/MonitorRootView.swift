@@ -133,7 +133,7 @@ struct MonitorRootView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
-                Text("Open Settings (\u2318,) or the menu bar icon \u2192 Settings\u2026 to set your SSH host, username, and Keychain credential.")
+                Text("Open Settings to set your SSH host, username, and Keychain credential.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -149,7 +149,7 @@ struct MonitorRootView: View {
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .font(.system(size: 28))
                     .foregroundStyle(.secondary)
-                Text("Connecting to Hermes\u2026")
+                Text("Connecting to Hermes...")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -174,7 +174,7 @@ struct MonitorRootView: View {
 
     private func summary(_ snapshot: HermesMonitorSnapshot) -> String {
         let running = snapshot.tasks.filter { $0.visualStatus == .running }.count
-        return "\(running) running \u00b7 \(snapshot.tasks.count) tasks \u00b7 updated " +
+        return "\(running) running · \(snapshot.tasks.count) tasks · updated " +
             snapshot.refreshedAt.formatted(.relative(presentation: .numeric))
     }
 
