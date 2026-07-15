@@ -3,6 +3,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let toggleHermesMonitorPanel = Notification.Name("toggleHermesMonitorPanel")
+    static let showHermesMonitorSettings = Notification.Name("showHermesMonitorSettings")
 }
 
 @MainActor

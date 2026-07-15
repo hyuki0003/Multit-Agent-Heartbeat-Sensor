@@ -96,8 +96,7 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NotificationCenter.default.post(name: .showHermesMonitorSettings, object: nil)
     }
 
     @objc private func quit() {

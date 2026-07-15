@@ -1,32 +1,15 @@
-#if canImport(SwiftUI)
+#if canImport(SwiftUI) && canImport(AppKit)
 import AppKit
 import SwiftUI
 
 @main
-struct HermesMonitorApp: App {
-    @NSApplicationDelegateAdaptor(HermesMonitorAppDelegate.self) private var appDelegate
-
-    var body: some Scene {
-        // Invisible WindowGroup to satisfy SwiftUI App lifecycle requirements.
-        // The real UI is the FloatingMonitorPanel managed by FloatingPanelController.
-        WindowGroup("HermesMonitor") {
-            EmptyView()
-                .frame(width: 0, height: 0)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        .defaultSize(width: 0, height: 0)
-
-        Settings {
-            MonitorSettingsView()
-        }
-        .commands {
-            CommandGroup(after: .windowArrangement) {
-                Button("Toggle Hermes Monitor") {
-                    NotificationCenter.default.post(name: .toggleHermesMonitorPanel, object: nil)
-                }
-            }
-        }
+enum HermesMonitorApp {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = HermesMonitorAppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
     }
 }
 
@@ -37,16 +20,9 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyController: GlobalHotKeyController?
     private var menuBarController: MenuBarController?
     private var notificationController: TaskNotificationController?
+    private var settingsWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-
-        // Close the invisible WindowGroup window that SwiftUI creates on launch.
-        // The real UI is the FloatingMonitorPanel managed by FloatingPanelController.
-        for window in NSApp.windows where !(window is NSPanel) {
-            window.orderOut(nil)
-        }
-
         let model: MonitorViewModel
         do {
             let client = try MonitorConnectionSettings.load().makeClient()
@@ -79,6 +55,12 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
             name: .toggleHermesMonitorPanel,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowSettings(_:)),
+            name: .showHermesMonitorSettings,
+            object: nil
+        )
         let hotKey = GlobalHotKeyController {
             NotificationCenter.default.post(name: .toggleHermesMonitorPanel, object: nil)
         }
@@ -91,6 +73,8 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
         model.startMonitoring {
             MonitorPreferences.refreshInterval()
         }
+
+        // Show the floating panel on launch — this is the main UI.
         panelController?.show()
     }
 
@@ -114,6 +98,26 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleTogglePanel(_ notification: Notification) {
         panelController?.toggle()
     }
+
+    @objc private func handleShowSettings(_ notification: Notification) {
+        showSettings()
+    }
+
+    // MARK: - Settings Window
+
+    func showSettings() {
+        if settingsWindowController == nil {
+            let hostingController = NSHostingController(rootView: MonitorSettingsView())
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Hermes Monitor Settings"
+            window.styleMask = [.titled, .closable]
+            window.setFrameAutosaveName("HermesMonitor.Settings")
+            settingsWindowController = NSWindowController(window: window)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindowController?.showWindow(nil)
+        settingsWindowController?.window?.makeKeyAndOrderFront(nil)
+    }
 }
 #else
 import Foundation
@@ -121,7 +125,7 @@ import Foundation
 @main
 enum HermesMonitorApp {
     static func main() {
-        print("HermesMonitorApp requires macOS with SwiftUI.")
+        print("HermesMonitorApp requires macOS with SwiftUI and AppKit.")
     }
 }
 #endif
