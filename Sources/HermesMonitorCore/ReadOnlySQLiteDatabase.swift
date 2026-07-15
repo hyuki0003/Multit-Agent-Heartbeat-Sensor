@@ -1,3 +1,6 @@
+#if canImport(CSQLite)
+import CSQLite
+#endif
 import Foundation
 
 public enum SQLiteStoreError: Error, LocalizedError {
