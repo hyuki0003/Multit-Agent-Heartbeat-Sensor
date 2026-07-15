@@ -1,4 +1,4 @@
-# Agent's Heartbeat Monitor for macOS
+# Agent's Heartbeat Monitor for Hermes
 
 A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. A menu bar item, system-wide hotkey, and proactive notifications keep the monitor available while other apps are focused.
 
