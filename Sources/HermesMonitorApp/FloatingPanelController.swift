@@ -26,8 +26,9 @@ final class FloatingPanelController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
+        // Opaque dark background so the panel is always visible
+        panel.isOpaque = true
+        panel.backgroundColor = NSColor.windowBackgroundColor
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 360, height: 460)
@@ -37,6 +38,7 @@ final class FloatingPanelController {
         if !restoredFrame {
             dockOnRight()
         }
+        NSLog("[HermesMonitor] FloatingPanelController init done, frame=\(panel.frame)")
     }
 
     func toggle() {
@@ -44,8 +46,10 @@ final class FloatingPanelController {
     }
 
     func show() {
+        NSLog("[HermesMonitor] show() called, isVisible before=\(panel.isVisible)")
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        NSLog("[HermesMonitor] show() done, isVisible after=\(panel.isVisible), frame=\(panel.frame)")
     }
 
     func hide() {
@@ -53,13 +57,17 @@ final class FloatingPanelController {
     }
 
     private func dockOnRight() {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.main else {
+            NSLog("[HermesMonitor] dockOnRight: NSScreen.main is nil!")
+            return
+        }
         let visible = screen.visibleFrame
         let origin = NSPoint(
             x: visible.maxX - panel.frame.width - 16,
             y: visible.midY - panel.frame.height / 2
         )
         panel.setFrameOrigin(origin)
+        NSLog("[HermesMonitor] dockOnRight: origin=\(origin), screen=\(visible)")
     }
 }
 

@@ -23,6 +23,8 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("[HermesMonitor] applicationDidFinishLaunching START")
+
         let model: MonitorViewModel
         do {
             let client = try MonitorConnectionSettings.load().makeClient()
@@ -75,7 +77,9 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Show the floating panel on launch — this is the main UI.
+        NSLog("[HermesMonitor] About to show panel")
         panelController?.show()
+        NSLog("[HermesMonitor] applicationDidFinishLaunching DONE")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
