@@ -82,8 +82,9 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
         guard !value.contains("\n"), !value.contains("\r"), !value.contains("\0") else {
             throw OpenSSHTransportError.invalidRemotePath(value)
         }
-        return "\"\(value.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\""))\""
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     private func runSFTP(batchCommand: String) throws -> String {
