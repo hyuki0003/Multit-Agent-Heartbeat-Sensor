@@ -1,6 +1,6 @@
 # Hermes Monitor for macOS
 
-A native SwiftUI observer for Hermes Kanban state on a remote Linux host. This package currently contains the foundation layer: strict SSH/SFTP access, Keychain-backed SSH credentials, read-only SQLite stores, schema models, task/run/session correlation, worker-log tails, and a 10-second polling primitive. The monitoring UI, notifications, and global hotkey are added by subsequent tasks.
+A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. Notifications and the system-wide hotkey are added by the next integration task.
 
 ## Requirements
 
@@ -67,6 +67,24 @@ let snapshot = try await client.refresh()
 
 `client.snapshots()` provides an `AsyncThrowingStream` with a default 10-second interval.
 
+## App connection settings
+
+The app reads non-secret connection settings from environment variables or macOS user defaults. SSH private-key material remains in Keychain through the credential reference described above.
+
+```sh
+export HERMES_MONITOR_HOST="remote.example.com"
+export HERMES_MONITOR_USERNAME="dhlee"
+export HERMES_MONITOR_KEYCHAIN_SERVICE="com.hermes.monitor.ssh"
+export HERMES_MONITOR_KEYCHAIN_ACCOUNT="dhlee@remote.example.com"
+swift run HermesMonitorApp
+```
+
+The available variables are `HERMES_MONITOR_HOST`, `HERMES_MONITOR_PORT`, `HERMES_MONITOR_USERNAME`, `HERMES_MONITOR_KEYCHAIN_SERVICE`, `HERMES_MONITOR_KEYCHAIN_ACCOUNT`, and optionally `HERMES_MONITOR_KNOWN_HOSTS`. The equivalent persistent `UserDefaults` keys are prefixed with `HermesMonitor.` (for example, `HermesMonitor.host`). Environment variables take precedence. The known-hosts path defaults to `~/.ssh/known_hosts`.
+
+The panel opens on launch, floats above regular windows, joins all Spaces, and restores its previous size and position. `Command-Shift-H` toggles it while the app is active. The same action is exposed as the `toggleHermesMonitorPanel` notification hook for the global-hotkey integration task; no system-wide event tap is installed yet.
+
+Optional one-time task/session overrides can be stored at `~/Library/Application Support/HermesMonitor/manual_links.json` as a JSON object from task ID to session ID. These local links never modify Hermes and remain marked uncertain in the UI.
+
 ## Correlation and liveness
 
 `TaskCorrelator` resolves links in this order:
@@ -78,11 +96,11 @@ let snapshot = try await client.refresh()
 5. optional manual task/session links
 6. `sessions.parent_session_id` to the parent session
 
-Direct links are marked `.direct`; PID/workspace fallbacks and manual links remain visibly uncertain for the UI. A running task is stale when its heartbeat age is greater than 180 seconds.
+Direct links are marked `.direct`; PID/workspace fallbacks and manual links remain visibly uncertain in each task card. Running-task liveness is fresh through 120 seconds, stale after 120 seconds, and dead after 180 seconds. Blocked tasks show an occasional ECG blip; done and failed tasks show a flatline.
 
 ## Source layout
 
-- `Sources/HermesMonitorCore/`: transport, synchronization, SQLite, models, mapping
-- `Sources/HermesMonitorApp/`: minimal SwiftUI executable entry point
+- `Sources/HermesMonitorCore/`: transport, synchronization, SQLite, models, mapping, and testable task-presentation rules
+- `Sources/HermesMonitorApp/`: floating `NSPanel`, refresh view model, task/group/detail views, and heartbeat/ECG rendering
 - `Sources/CSQLite/`: SQLite C system-module shim
 - `Tests/HermesMonitorCoreTests/`: path-boundary, parser, mapping, SQLite, and synchronization tests

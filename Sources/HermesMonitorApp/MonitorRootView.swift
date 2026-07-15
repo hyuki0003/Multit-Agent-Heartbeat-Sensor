@@ -1,0 +1,163 @@
+import Combine
+import Foundation
+import SwiftUI
+import HermesMonitorCore
+
+struct MonitorRootView: View {
+    @ObservedObject var viewModel: MonitorViewModel
+
+    private let refreshTimer = Timer.publish(
+        every: 10,
+        on: .main,
+        in: .common
+    ).autoconnect()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().opacity(0.35)
+
+            if let errorMessage = viewModel.errorMessage {
+                messageBanner(
+                    text: errorMessage,
+                    color: .red,
+                    systemImage: "exclamationmark.octagon.fill"
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+            }
+
+            if let snapshot = viewModel.snapshot {
+                if !snapshot.warnings.isEmpty {
+                    messageBanner(
+                        text: snapshot.warnings.prefix(2).joined(separator: "\n"),
+                        color: .yellow,
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                }
+
+                if snapshot.tasks.isEmpty {
+                    emptyState
+                } else {
+                    ScrollView {
+                        TaskListView(snapshot: snapshot)
+                            .padding(12)
+                    }
+                }
+            } else {
+                loadingState
+            }
+        }
+        .frame(minWidth: 360, idealWidth: 430, minHeight: 460, idealHeight: 720)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .preferredColorScheme(.dark)
+        .task {
+            await viewModel.refresh()
+        }
+        .onReceive(refreshTimer) { _ in
+            Task { await viewModel.refresh() }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.red.opacity(0.14))
+                Image(systemName: "heart.text.square.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("HERMES MONITOR")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .tracking(0.8)
+                if let snapshot = viewModel.snapshot {
+                    Text(summary(snapshot))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("read-only remote observer")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if viewModel.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button {
+                Task { await viewModel.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help("Refresh now")
+            .disabled(viewModel.isRefreshing)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text(viewModel.errorMessage == nil ? "Connecting to Hermes…" : "Waiting for configuration")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 30))
+                .foregroundStyle(.green)
+            Text("No tasks in the current snapshot")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func summary(_ snapshot: HermesMonitorSnapshot) -> String {
+        let running = snapshot.tasks.filter { $0.visualStatus == .running }.count
+        return "\(running) running · \(snapshot.tasks.count) tasks · updated " +
+            snapshot.refreshedAt.formatted(.relative(presentation: .numeric))
+    }
+
+    private func messageBanner(text: String, color: Color, systemImage: String) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: systemImage)
+                .foregroundStyle(color)
+            Text(text)
+                .font(.caption)
+                .lineLimit(3)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(color.opacity(0.25), lineWidth: 0.7)
+        }
+    }
+}
