@@ -31,6 +31,10 @@ targets:
         OTHER_LDFLAGS: "-lsqlite3"
         SYSTEM_HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include /usr/local/include"
         HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include /usr/local/include"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_HARDENED_RUNTIME: NO
     dependencies:
       - sdk: AVFoundation.framework
       - sdk: Carbon.framework
