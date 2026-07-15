@@ -11,11 +11,11 @@ final class TaskNotificationController: NSObject, UNUserNotificationCenterDelega
 
     init(
         center: UNUserNotificationCenter = .current(),
-        soundPlayer: any DeathSoundPlaying = DeathSoundPlayer(),
+        soundPlayer: (any DeathSoundPlaying)? = nil,
         onTaskSelected: @escaping (String) -> Void
     ) {
         self.center = center
-        self.soundPlayer = soundPlayer
+        self.soundPlayer = soundPlayer ?? DeathSoundPlayer()
         self.onTaskSelected = onTaskSelected
         super.init()
         center.delegate = self
