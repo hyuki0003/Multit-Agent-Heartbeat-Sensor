@@ -8,14 +8,13 @@ struct HermesMonitorApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            MonitorSettingsView()
         }
         .commands {
             CommandGroup(after: .windowArrangement) {
                 Button("Toggle Hermes Monitor") {
                     NotificationCenter.default.post(name: .toggleHermesMonitorPanel, object: nil)
                 }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
             }
         }
     }
@@ -25,8 +24,13 @@ struct HermesMonitorApp: App {
 final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: FloatingPanelController?
     private var viewModel: MonitorViewModel?
+    private var hotKeyController: GlobalHotKeyController?
+    private var menuBarController: MenuBarController?
+    private var notificationController: TaskNotificationController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
         let model: MonitorViewModel
         do {
             let client = try MonitorConnectionSettings.load().makeClient()
@@ -37,13 +41,45 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
         viewModel = model
         panelController = FloatingPanelController(rootView: MonitorRootView(viewModel: model))
+        menuBarController = MenuBarController(viewModel: model) { [weak self] in
+            self?.panelController?.toggle()
+        }
+        notificationController = TaskNotificationController { [weak self] taskID in
+            self?.viewModel?.selectTask(taskID)
+            self?.panelController?.show()
+        }
+        notificationController?.requestAuthorization()
+        model.onSnapshot = { [weak self] snapshot in
+            self?.menuBarController?.update(snapshot: snapshot)
+            self?.notificationController?.process(
+                snapshot: snapshot,
+                preferences: MonitorPreferences.notifications()
+            )
+        }
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleTogglePanel(_:)),
             name: .toggleHermesMonitorPanel,
             object: nil
         )
-        panelController?.show()
+        let hotKey = GlobalHotKeyController {
+            NotificationCenter.default.post(name: .toggleHermesMonitorPanel, object: nil)
+        }
+        do {
+            try hotKey.register()
+            hotKeyController = hotKey
+        } catch {
+            model.reportNonfatalError(error)
+        }
+        model.startMonitoring {
+            MonitorPreferences.refreshInterval()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        viewModel?.stopMonitoring()
+        hotKeyController = nil
     }
 
     func applicationShouldHandleReopen(

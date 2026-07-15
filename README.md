@@ -1,6 +1,6 @@
 # Hermes Monitor for macOS
 
-A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. Notifications and the system-wide hotkey are added by the next integration task.
+A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. A menu bar item, system-wide hotkey, and proactive notifications keep the monitor available while other apps are focused.
 
 ## Requirements
 
@@ -81,7 +81,9 @@ swift run HermesMonitorApp
 
 The available variables are `HERMES_MONITOR_HOST`, `HERMES_MONITOR_PORT`, `HERMES_MONITOR_USERNAME`, `HERMES_MONITOR_KEYCHAIN_SERVICE`, `HERMES_MONITOR_KEYCHAIN_ACCOUNT`, and optionally `HERMES_MONITOR_KNOWN_HOSTS`. The equivalent persistent `UserDefaults` keys are prefixed with `HermesMonitor.` (for example, `HermesMonitor.host`). Environment variables take precedence. The known-hosts path defaults to `~/.ssh/known_hosts`.
 
-The panel opens on launch, floats above regular windows, joins all Spaces, and restores its previous size and position. `Command-Shift-H` toggles it while the app is active. The same action is exposed as the `toggleHermesMonitorPanel` notification hook for the global-hotkey integration task; no system-wide event tap is installed yet.
+The app launches as a menu bar accessory with the panel hidden. The Carbon hotkey API registers `Command-Shift-H` system-wide by default without requiring an event tap. Settings can change the key (`H`, `J`, `K`, `L`, or `M`) and modifier combination for the next launch. The menu bar item shows the active shortcut plus running/blocked counts and provides Toggle Window, Refresh Now, Settings, and Quit actions. The panel floats above regular windows, joins all Spaces, and restores its previous size and position.
+
+The app requests macOS notification authorization on launch. By default it reports running tasks that become blocked, done, failed/crashed, or whose heartbeat exceeds 180 seconds. New-task notifications are available but disabled by default. Repeated task/event pairs are deduplicated for 60 seconds. Clicking a notification opens the panel, scrolls to the task, and highlights its card. The hotkey, notification categories, the 2–60 second refresh interval, connection metadata, and the Keychain credential reference are configurable from Settings; SSH key material remains in Keychain.
 
 Optional one-time task/session overrides can be stored at `~/Library/Application Support/HermesMonitor/manual_links.json` as a JSON object from task ID to session ID. These local links never modify Hermes and remain marked uncertain in the UI.
 
@@ -92,15 +94,15 @@ Optional one-time task/session overrides can be stored at `~/Library/Application
 1. `tasks.current_run_id` to `task_runs.id`
 2. `tasks.session_id` to `sessions.id`
 3. `tasks.worker_pid` to `task_runs.worker_pid` or `task_runs.metadata.pid`
-4. a unique `tasks.workspace_path` to `sessions.cwd` fallback
-5. optional manual task/session links
+4. optional manual task/session links
+5. a unique `tasks.workspace_path` to `sessions.cwd` fallback
 6. `sessions.parent_session_id` to the parent session
 
-Direct links are marked `.direct`; PID/workspace fallbacks and manual links remain visibly uncertain in each task card. Running-task liveness is fresh through 120 seconds, stale after 120 seconds, and dead after 180 seconds. Blocked tasks show an occasional ECG blip; done and failed tasks show a flatline.
+Direct links are marked `.direct`; PID/workspace fallbacks and manual links remain visibly uncertain in each task card. Running-task liveness is fresh below 60 seconds, stale from 60 through 179 seconds, and dead at 180 seconds. Stale ECG amplitude diminishes toward a flatline; done and failed tasks show a flatline.
 
 ## Source layout
 
 - `Sources/HermesMonitorCore/`: transport, synchronization, SQLite, models, mapping, and testable task-presentation rules
-- `Sources/HermesMonitorApp/`: floating `NSPanel`, refresh view model, task/group/detail views, and heartbeat/ECG rendering
+- `Sources/HermesMonitorApp/`: app lifecycle, menu bar, Carbon hotkey, notifications/settings, floating `NSPanel`, refresh view model, and task UI
 - `Sources/CSQLite/`: SQLite C system-module shim
 - `Tests/HermesMonitorCoreTests/`: path-boundary, parser, mapping, SQLite, and synchronization tests

@@ -1,16 +1,9 @@
-import Combine
 import Foundation
 import SwiftUI
 import HermesMonitorCore
 
 struct MonitorRootView: View {
     @ObservedObject var viewModel: MonitorViewModel
-
-    private let refreshTimer = Timer.publish(
-        every: 10,
-        on: .main,
-        in: .common
-    ).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,9 +34,23 @@ struct MonitorRootView: View {
                 if snapshot.tasks.isEmpty {
                     emptyState
                 } else {
-                    ScrollView {
-                        TaskListView(snapshot: snapshot)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            TaskListView(
+                                snapshot: snapshot,
+                                selectedTaskID: viewModel.selectedTaskID,
+                                onManualLink: viewModel.link(taskID:to:)
+                            )
                             .padding(12)
+                        }
+                        .onChange(of: viewModel.selectedTaskID) { taskID in
+                            guard let taskID else { return }
+                            DispatchQueue.main.async {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    proxy.scrollTo(taskID, anchor: .center)
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -54,12 +61,6 @@ struct MonitorRootView: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .preferredColorScheme(.dark)
-        .task {
-            await viewModel.refresh()
-        }
-        .onReceive(refreshTimer) { _ in
-            Task { await viewModel.refresh() }
-        }
     }
 
     private var header: some View {

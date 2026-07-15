@@ -5,10 +5,10 @@ final class TaskPresentationTests: XCTestCase {
     func testRunningLivenessUsesFreshStaleAndDeadThresholds() {
         let now = Date(timeIntervalSince1970: 1_000)
 
-        XCTAssertEqual(makeTask(id: "fresh", heartbeatAge: 120, now: now).liveness(at: now), .fresh)
-        XCTAssertEqual(makeTask(id: "stale", heartbeatAge: 121, now: now).liveness(at: now), .stale)
-        XCTAssertEqual(makeTask(id: "edge", heartbeatAge: 180, now: now).liveness(at: now), .stale)
-        XCTAssertEqual(makeTask(id: "dead", heartbeatAge: 181, now: now).liveness(at: now), .dead)
+        XCTAssertEqual(makeTask(id: "fresh", heartbeatAge: 59, now: now).liveness(at: now), .fresh)
+        XCTAssertEqual(makeTask(id: "stale", heartbeatAge: 60, now: now).liveness(at: now), .stale)
+        XCTAssertEqual(makeTask(id: "edge", heartbeatAge: 179, now: now).liveness(at: now), .stale)
+        XCTAssertEqual(makeTask(id: "dead", heartbeatAge: 180, now: now).liveness(at: now), .dead)
         XCTAssertEqual(makeTask(id: "missing", heartbeatAge: nil, now: now).liveness(at: now), .dead)
     }
 

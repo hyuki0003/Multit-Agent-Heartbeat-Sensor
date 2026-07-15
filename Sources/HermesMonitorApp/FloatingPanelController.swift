@@ -28,6 +28,7 @@ final class FloatingPanelController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 360, height: 460)
         let autosaveName = "HermesMonitor.FloatingPanel"
         let restoredFrame = panel.setFrameUsingName(autosaveName)
@@ -42,9 +43,8 @@ final class FloatingPanelController {
     }
 
     func show() {
-        panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
-        panel.makeKey()
+        panel.makeKeyAndOrderFront(nil)
     }
 
     func hide() {

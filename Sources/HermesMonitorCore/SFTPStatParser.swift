@@ -28,7 +28,7 @@ public enum SFTPStatParseError: Error, Equatable, LocalizedError {
 
 public enum SFTPStatParser {
     public static func parse(output: String, path: String) throws -> RemoteFileMetadata {
-        let lines = output.split(whereSeparator: \Character.isNewline).map {
+        let lines = output.split(whereSeparator: { $0.isNewline }).map {
             String($0).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
@@ -39,7 +39,7 @@ public enum SFTPStatParser {
         let size = lines.lazy.compactMap { line -> Int64? in
             guard line.hasPrefix("Size:") else { return nil }
             let value = line.dropFirst("Size:".count)
-                .split(whereSeparator: \Character.isWhitespace)
+                .split(whereSeparator: { $0.isWhitespace })
                 .first
             return value.flatMap { Int64($0) }
         }.first
@@ -73,7 +73,7 @@ public enum SFTPStatParser {
         path: String
     ) -> RemoteFileMetadata? {
         for line in lines {
-            let fields = line.split(whereSeparator: \Character.isWhitespace)
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
             guard fields.count >= 9,
                   fields[0].count == 10,
                   "-bcdlps".contains(fields[0].first ?? "?"),

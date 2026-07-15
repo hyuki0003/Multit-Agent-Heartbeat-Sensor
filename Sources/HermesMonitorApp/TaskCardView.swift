@@ -7,6 +7,9 @@ struct TaskCardView: View {
     let events: [TaskEvent]
     let comments: [TaskComment]
     let logLines: [String]
+    let availableSessions: [HermesSession]
+    let isSelected: Bool
+    let onManualLink: (String, String) -> Void
 
     @State private var showsLog = false
     @State private var showsDetail = false
@@ -19,15 +22,20 @@ struct TaskCardView: View {
 
     private func cardContent(liveness: TaskLivenessState) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 9) {
-                HeartbeatIndicator(item: item, liveness: liveness)
-                    .frame(width: 24, height: 24)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .top, spacing: 8) {
+                        HeartbeatIndicator(item: item, liveness: liveness)
+                            .frame(width: 24, height: 24)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.task.title)
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
-                        .lineLimit(2)
-                        .truncationMode(.tail)
+                        Text(item.task.title)
+                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+
+                        Spacer(minLength: 3)
+                        StatusBadge(status: item.visualStatus)
+                    }
 
                     HStack(spacing: 5) {
                         Image(systemName: "person.crop.circle")
@@ -36,51 +44,75 @@ struct TaskCardView: View {
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "terminal")
+                            .foregroundStyle(.cyan)
+                        Text(item.session?.title ?? item.session?.id ?? "No mapped session")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    if item.isUncertain {
+                        HStack(spacing: 8) {
+                            Label("Uncertain", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                                .help("Session or run mapping is inferred, manual, or unmatched.")
+
+                            if canLinkManually {
+                                Menu {
+                                    ForEach(availableSessions) { session in
+                                        Button(session.title ?? session.id) {
+                                            onManualLink(item.id, session.id)
+                                        }
+                                    }
+                                } label: {
+                                    Label(
+                                        item.sessionConfidence == .manual ? "Change Link" : "Link Manually",
+                                        systemImage: "link"
+                                    )
+                                }
+                                .menuStyle(.borderlessButton)
+                                .disabled(availableSessions.isEmpty)
+                                .help(availableSessions.isEmpty ? "No sessions available" : "Select a session")
+                            }
+                        }
+                        .font(.caption2)
+                    }
+
+                    HStack(spacing: 9) {
+                        Label("\(runs.count) runs", systemImage: "arrow.triangle.2.circlepath")
+                        Label("\(item.task.consecutiveFailures) failures", systemImage: "xmark.octagon")
+                            .foregroundStyle(item.task.consecutiveFailures > 0 ? Color.red : Color.secondary)
+                        Spacer(minLength: 2)
+                        Circle()
+                            .fill(liveness.color)
+                            .frame(width: 6, height: 6)
+                        Text(liveness.displayName)
+                            .foregroundStyle(liveness.color)
+                    }
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+
+                    if let heartbeat = item.task.lastHeartbeatAt {
+                        HStack(spacing: 4) {
+                            Text("heartbeat")
+                            Text(heartbeat, style: .relative)
+                        }
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 4)
-                StatusBadge(status: item.visualStatus)
+                ECGWaveformView(
+                    status: item.visualStatus,
+                    liveness: liveness,
+                    lastHeartbeatAt: item.task.lastHeartbeatAt
+                )
+                .frame(minWidth: 105, idealWidth: 130, maxWidth: 155)
             }
-
-            HStack(spacing: 6) {
-                Image(systemName: "terminal")
-                    .foregroundStyle(.cyan)
-                Text(item.session?.title ?? item.session?.id ?? "No mapped session")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if item.isUncertain {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
-                        .help("Session or run mapping is inferred, manual, or unmatched.")
-                        .accessibilityLabel("Uncertain task mapping")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 11) {
-                Label("\(runs.count) runs", systemImage: "arrow.triangle.2.circlepath")
-                Label("\(item.task.consecutiveFailures) failures", systemImage: "xmark.octagon")
-                    .foregroundStyle(item.task.consecutiveFailures > 0 ? Color.red : Color.secondary)
-                Spacer(minLength: 2)
-                Circle()
-                    .fill(liveness.color)
-                    .frame(width: 6, height: 6)
-                Text(liveness.displayName)
-                    .foregroundStyle(liveness.color)
-            }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-
-            if let heartbeat = item.task.lastHeartbeatAt {
-                HStack(spacing: 4) {
-                    Text("heartbeat")
-                    Text(heartbeat, style: .relative)
-                }
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.tertiary)
-            }
-
-            ECGWaveformView(status: item.visualStatus, liveness: liveness)
 
             HStack(spacing: 12) {
                 DisclosureButton(
@@ -133,11 +165,43 @@ struct TaskCardView: View {
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.78))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(item.visualStatus.color.opacity(0.28), lineWidth: 1)
+                        .fill(cardTint(liveness).opacity(cardTintOpacity(liveness)))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(
+                            isSelected ? Color.accentColor : cardTint(liveness).opacity(0.38),
+                            lineWidth: isSelected ? 2 : 1
+                        )
                 }
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.task.title), \(item.visualStatus.displayName)")
+    }
+
+    private var canLinkManually: Bool {
+        item.sessionConfidence == .inferred ||
+            item.sessionConfidence == .unmatched ||
+            item.sessionConfidence == .manual
+    }
+
+    private func cardTint(_ liveness: TaskLivenessState) -> Color {
+        if item.visualStatus == .running {
+            switch liveness {
+            case .stale: return .yellow
+            case .dead: return .red
+            case .fresh: return .green
+            case .inactive: break
+            }
+        }
+        return item.visualStatus.color
+    }
+
+    private func cardTintOpacity(_ liveness: TaskLivenessState) -> Double {
+        if item.visualStatus == .running && (liveness == .stale || liveness == .dead) {
+            return 0.09
+        }
+        return 0.06
     }
 }
 

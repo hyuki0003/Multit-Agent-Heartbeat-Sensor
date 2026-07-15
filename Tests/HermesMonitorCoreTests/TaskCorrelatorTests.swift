@@ -76,4 +76,36 @@ final class TaskCorrelatorTests: XCTestCase {
         XCTAssertEqual(result[0].sessionConfidence, .inferred)
         XCTAssertTrue(result[0].isUncertain)
     }
+
+    func testManualSessionLinkOverridesInferredWorkspaceMatch() {
+        let task = KanbanTask(
+            id: "t_3",
+            title: "Manual",
+            status: .running,
+            createdAt: Date(timeIntervalSince1970: 100),
+            workspacePath: "/tmp/work"
+        )
+        let inferred = HermesSession(
+            id: "inferred",
+            source: "kanban",
+            startedAt: Date(timeIntervalSince1970: 120),
+            cwd: "/tmp/work"
+        )
+        let selected = HermesSession(
+            id: "selected",
+            source: "kanban",
+            startedAt: Date(timeIntervalSince1970: 121),
+            cwd: "/tmp/other"
+        )
+
+        let result = TaskCorrelator(manualSessionLinks: ["t_3": "selected"]).correlate(
+            tasks: [task],
+            runs: [],
+            sessions: [inferred, selected]
+        )
+
+        XCTAssertEqual(result[0].session?.id, "selected")
+        XCTAssertEqual(result[0].sessionConfidence, .manual)
+        XCTAssertTrue(result[0].isUncertain)
+    }
 }

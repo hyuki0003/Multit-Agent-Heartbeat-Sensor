@@ -23,7 +23,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "HermesMonitorApp",
-            dependencies: ["HermesMonitorCore"]
+            dependencies: ["HermesMonitorCore"],
+            linkerSettings: [
+                .linkedFramework("Carbon", .when(platforms: [.macOS])),
+                .linkedFramework("UserNotifications", .when(platforms: [.macOS]))
+            ]
         ),
         .testTarget(
             name: "HermesMonitorCoreTests",

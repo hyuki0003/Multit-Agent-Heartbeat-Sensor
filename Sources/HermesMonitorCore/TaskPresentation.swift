@@ -20,15 +20,15 @@ public enum TaskVisualStatus: String, Codable, CaseIterable, Equatable, Sendable
 public extension KanbanTask {
     func liveness(
         at now: Date = Date(),
-        staleAfter: TimeInterval = 120,
+        staleAfter: TimeInterval = 60,
         deadAfter: TimeInterval = 180
     ) -> TaskLivenessState {
         guard status == .running else { return .inactive }
         guard let lastHeartbeatAt else { return .dead }
 
         let age = max(0, now.timeIntervalSince(lastHeartbeatAt))
-        if age > deadAfter { return .dead }
-        if age > staleAfter { return .stale }
+        if age >= deadAfter { return .dead }
+        if age >= staleAfter { return .stale }
         return .fresh
     }
 }
