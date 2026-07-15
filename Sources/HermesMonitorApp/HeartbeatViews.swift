@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import HermesMonitorCore
 
 struct HeartbeatIndicator: View {
     let item: CorrelatedTask

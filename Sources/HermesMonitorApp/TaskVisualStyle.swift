@@ -1,5 +1,4 @@
 import SwiftUI
-import HermesMonitorCore
 
 extension TaskVisualStatus {
     var displayName: String {

@@ -1,4 +1,3 @@
-import CSQLite
 import Foundation
 
 public enum SQLiteStoreError: Error, LocalizedError {

@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import HermesMonitorCore
 
 @MainActor
 final class MonitorViewModel: ObservableObject {

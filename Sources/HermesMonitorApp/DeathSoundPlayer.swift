@@ -1,5 +1,4 @@
 import AVFoundation
-import HermesMonitorCore
 
 @MainActor
 protocol DeathSoundPlaying: AnyObject {

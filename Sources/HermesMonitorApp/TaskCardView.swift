@@ -1,5 +1,4 @@
 import SwiftUI
-import HermesMonitorCore
 
 struct TaskCardView: View {
     let item: CorrelatedTask

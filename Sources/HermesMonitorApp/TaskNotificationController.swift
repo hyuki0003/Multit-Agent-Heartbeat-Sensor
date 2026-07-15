@@ -1,5 +1,4 @@
 import Foundation
-import HermesMonitorCore
 import UserNotifications
 
 @MainActor

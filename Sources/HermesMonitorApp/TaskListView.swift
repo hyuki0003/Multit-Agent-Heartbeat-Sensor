@@ -1,5 +1,4 @@
 import SwiftUI
-import HermesMonitorCore
 
 struct TaskListView: View {
     let snapshot: HermesMonitorSnapshot

@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import HermesMonitorCore
 
 struct MonitorRootView: View {
     @ObservedObject var viewModel: MonitorViewModel

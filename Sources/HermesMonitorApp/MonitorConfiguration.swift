@@ -1,5 +1,4 @@
 import Foundation
-import HermesMonitorCore
 
 struct MonitorConnectionSettings {
     let host: String

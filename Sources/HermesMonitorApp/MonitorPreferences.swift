@@ -1,5 +1,4 @@
 import Foundation
-import HermesMonitorCore
 
 enum MonitorPreferenceKeys {
     static let refreshInterval = "HermesMonitor.refreshInterval"
