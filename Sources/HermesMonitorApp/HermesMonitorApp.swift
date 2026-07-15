@@ -12,9 +12,9 @@ struct HermesMonitorApp: App {
         WindowGroup("HermesMonitor") {
             EmptyView()
                 .frame(width: 0, height: 0)
-                .windowResizability(.contentSize)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
         .defaultSize(width: 0, height: 0)
 
         Settings {
