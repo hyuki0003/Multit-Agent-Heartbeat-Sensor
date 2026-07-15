@@ -75,6 +75,7 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
         model.startMonitoring {
             MonitorPreferences.refreshInterval()
         }
+        panelController?.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

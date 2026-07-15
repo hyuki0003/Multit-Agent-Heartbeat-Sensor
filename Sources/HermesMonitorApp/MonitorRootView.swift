@@ -113,12 +113,31 @@ struct MonitorRootView: View {
     private var loadingState: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
-            Text(viewModel.errorMessage == nil ? "Connecting to Hermes…" : "Waiting for configuration")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            if viewModel.errorMessage != nil {
+                Image(systemName: "gear.badge.questionmark")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.orange)
+                Text("Configuration needed")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(viewModel.errorMessage ?? "")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                Text("Open Settings (⌘,) or the menu bar icon → Settings… to set your SSH host, username, and Keychain credential.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            } else {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                Text("Connecting to Hermes…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
