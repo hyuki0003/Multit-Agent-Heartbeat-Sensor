@@ -7,6 +7,16 @@ struct HermesMonitorApp: App {
     @NSApplicationDelegateAdaptor(HermesMonitorAppDelegate.self) private var appDelegate
 
     var body: some Scene {
+        // Invisible WindowGroup to satisfy SwiftUI App lifecycle requirements.
+        // The real UI is the FloatingMonitorPanel managed by FloatingPanelController.
+        WindowGroup("HermesMonitor") {
+            EmptyView()
+                .frame(width: 0, height: 0)
+                .windowResizability(.contentSize)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 0, height: 0)
+
         Settings {
             MonitorSettingsView()
         }
@@ -30,6 +40,12 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        // Close the invisible WindowGroup window that SwiftUI creates on launch.
+        // The real UI is the FloatingMonitorPanel managed by FloatingPanelController.
+        for window in NSApp.windows where !(window is NSPanel) {
+            window.orderOut(nil)
+        }
 
         let model: MonitorViewModel
         do {
