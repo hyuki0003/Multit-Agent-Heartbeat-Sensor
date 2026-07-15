@@ -104,6 +104,15 @@ struct MonitorRootView: View {
             .buttonStyle(.plain)
             .help("Refresh now")
             .disabled(viewModel.isRefreshing)
+
+            Button {
+                NotificationCenter.default.post(name: .showHermesMonitorSettings, object: nil)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
@@ -124,16 +133,23 @@ struct MonitorRootView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
-                Text("Open Settings (⌘,) or the menu bar icon → Settings… to set your SSH host, username, and Keychain credential.")
+                Text("Open Settings (\u2318,) or the menu bar icon \u2192 Settings\u2026 to set your SSH host, username, and Keychain credential.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+                Button {
+                    NotificationCenter.default.post(name: .showHermesMonitorSettings, object: nil)
+                } label: {
+                    Label("Open Settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 8)
             } else {
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .font(.system(size: 28))
                     .foregroundStyle(.secondary)
-                Text("Connecting to Hermes…")
+                Text("Connecting to Hermes\u2026")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -158,7 +174,7 @@ struct MonitorRootView: View {
 
     private func summary(_ snapshot: HermesMonitorSnapshot) -> String {
         let running = snapshot.tasks.filter { $0.visualStatus == .running }.count
-        return "\(running) running · \(snapshot.tasks.count) tasks · updated " +
+        return "\(running) running \u00b7 \(snapshot.tasks.count) tasks \u00b7 updated " +
             snapshot.refreshedAt.formatted(.relative(presentation: .numeric))
     }
 
