@@ -17,6 +17,8 @@ swift test
 swift run HermesMonitorApp
 ```
 
+`swift run HermesMonitorApp` launches the UI, but UserNotifications is available only from a bundled `.app`.
+
 ## Read-only boundary
 
 `RemotePathPolicy` permits reads only from:

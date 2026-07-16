@@ -1,5 +1,8 @@
 #if canImport(SwiftUI) && canImport(AppKit)
 import AppKit
+#if canImport(HermesMonitorCore)
+import HermesMonitorCore
+#endif
 import SwiftUI
 
 @main
@@ -38,11 +41,16 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
         menuBarController = MenuBarController(viewModel: model) { [weak self] in
             self?.panelController?.toggle()
         }
-        notificationController = TaskNotificationController { [weak self] taskID in
-            self?.viewModel?.selectTask(taskID)
-            self?.panelController?.show()
+        if NotificationAvailabilityPolicy.isAvailable(
+            processBundleURL: Bundle.main.bundleURL,
+            bundleIdentifier: Bundle.main.bundleIdentifier
+        ) {
+            notificationController = TaskNotificationController { [weak self] taskID in
+                self?.viewModel?.selectTask(taskID)
+                self?.panelController?.show()
+            }
+            notificationController?.requestAuthorization()
         }
-        notificationController?.requestAuthorization()
         model.onSnapshot = { [weak self] snapshot in
             self?.menuBarController?.update(snapshot: snapshot)
             self?.notificationController?.process(
