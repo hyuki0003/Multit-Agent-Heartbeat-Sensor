@@ -671,6 +671,26 @@ final class SSHConfigurationTests: XCTestCase {
         )
     }
 
+    func testDatabaseSnapshotCommandAcceptsOnlyExactAllowlistedPaths() throws {
+        let helper = "print('snapshot')"
+        let command = try OpenSSHTransport.databaseSnapshotCommand(
+            helper: helper,
+            remotePath: RemotePathPolicy.kanbanDatabase
+        )
+
+        XCTAssertTrue(command.hasPrefix("/usr/bin/python3 -c "))
+        XCTAssertTrue(command.contains(RemotePathPolicy.kanbanDatabase))
+        let invalidPath = RemotePathPolicy.kanbanDatabase + ";touch /tmp/pwned"
+        XCTAssertThrowsError(
+            try OpenSSHTransport.databaseSnapshotCommand(
+                helper: helper,
+                remotePath: invalidPath
+            )
+        ) { error in
+            XCTAssertEqual(error as? RemotePathPolicyError, .databasePathNotAllowed(invalidPath))
+        }
+    }
+
     private func makeConfiguration(
         authenticationMode: SSHAuthenticationMode
     ) throws -> SSHConnectionConfiguration {

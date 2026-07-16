@@ -4,7 +4,7 @@ import XCTest
 @testable import HermesMonitorCore
 
 final class RemoteSnapshotSynchronizerTests: XCTestCase {
-    func testAlwaysRefreshesSmallKanbanCopyAndDownloadsOtherFilesOnlyWhenChanged() async throws {
+    func testRefreshesBothDatabaseSnapshotsEveryTimeAndDownloadsLogsOnlyWhenChanged() async throws {
         let localDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: localDirectory) }
@@ -36,17 +36,25 @@ final class RemoteSnapshotSynchronizerTests: XCTestCase {
         )
 
         let first = try await synchronizer.refresh(taskIDs: ["t_1"])
+        let staleWAL = URL(fileURLWithPath: first.kanbanDatabase.path + "-wal")
+        let staleSHM = URL(fileURLWithPath: first.kanbanDatabase.path + "-shm")
+        try Data("stale".utf8).write(to: staleWAL)
+        try Data("stale".utf8).write(to: staleSHM)
         _ = try await synchronizer.refresh(taskIDs: ["t_1"])
         let downloadsAfterSecondRefresh = await transport.downloadedPaths()
+        let snapshotsAfterSecondRefresh = await transport.snapshotDownloadedPaths()
         let tailDownloadsAfterSecondRefresh = await transport.tailDownloadedPaths()
-        XCTAssertEqual(downloadsAfterSecondRefresh, [
+        XCTAssertEqual(downloadsAfterSecondRefresh, [logPath])
+        XCTAssertEqual(snapshotsAfterSecondRefresh, [
             RemotePathPolicy.kanbanDatabase,
             RemotePathPolicy.stateDatabase,
-            logPath,
-            RemotePathPolicy.kanbanDatabase
+            RemotePathPolicy.kanbanDatabase,
+            RemotePathPolicy.stateDatabase
         ])
         XCTAssertEqual(tailDownloadsAfterSecondRefresh, [logPath])
         XCTAssertEqual(try Data(contentsOf: first.kanbanDatabase), databaseData)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleWAL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleSHM.path))
 
         await transport.setMetadata(.init(
             path: RemotePathPolicy.stateDatabase,
@@ -56,14 +64,14 @@ final class RemoteSnapshotSynchronizerTests: XCTestCase {
         await transport.setPayload(databaseData, for: RemotePathPolicy.stateDatabase)
         _ = try await synchronizer.refresh(taskIDs: ["t_1"])
 
-        let downloadsAfterChange = await transport.downloadedPaths()
-        XCTAssertEqual(Array(downloadsAfterChange.suffix(2)), [
+        let snapshotsAfterChange = await transport.snapshotDownloadedPaths()
+        XCTAssertEqual(Array(snapshotsAfterChange.suffix(2)), [
             RemotePathPolicy.kanbanDatabase,
             RemotePathPolicy.stateDatabase
         ])
     }
 
-    func testRejectsInvalidDatabaseBeforeReplacingCachedSnapshot() async throws {
+    func testRejectsTruncatedAndCorruptDatabasesBeforeReplacingCachedSnapshot() async throws {
         let localDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-invalid-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: localDirectory) }
@@ -92,18 +100,52 @@ final class RemoteSnapshotSynchronizerTests: XCTestCase {
         )
 
         let first = try await synchronizer.refresh(taskIDs: [])
-        await transport.setMetadata(.init(
-            path: RemotePathPolicy.kanbanDatabase,
-            size: 12,
-            modificationToken: "2026-07-15 12:00:01.000000000 +0900"
-        ))
-        await transport.setPayload(Data("not a sqlite".utf8), for: RemotePathPolicy.kanbanDatabase)
+        let invalidPayloads = [
+            Data(databaseData.prefix(32)),
+            Data("not a sqlite".utf8)
+        ]
+        for (offset, payload) in invalidPayloads.enumerated() {
+            await transport.setPayload(payload, for: RemotePathPolicy.kanbanDatabase)
+            do {
+                _ = try await synchronizer.refresh(taskIDs: [])
+                XCTFail("Expected invalid downloaded SQLite snapshot to be rejected")
+            } catch SnapshotSynchronizerError.invalidDatabaseSnapshot(let path, _) {
+                XCTAssertEqual(path, RemotePathPolicy.kanbanDatabase)
+            }
+            XCTAssertEqual(try Data(contentsOf: first.kanbanDatabase), databaseData)
+            let databaseDirectory = localDirectory.appendingPathComponent("databases", isDirectory: true)
+            let leftovers = try FileManager.default.contentsOfDirectory(
+                at: databaseDirectory,
+                includingPropertiesForKeys: nil
+            ).filter { $0.lastPathComponent.contains(".partial") }
+            XCTAssertEqual(leftovers, [], "invalid payload \(offset) left partial artifacts")
+        }
+    }
+
+    func testSnapshotHelperFailureKeepsLastValidatedDatabase() async throws {
+        let localDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-helper-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: localDirectory) }
+        let databaseData = try sqliteDatabaseData()
+        let transport = FakeRemoteFileTransport(
+            metadata: [:],
+            payloads: [
+                RemotePathPolicy.kanbanDatabase: databaseData,
+                RemotePathPolicy.stateDatabase: databaseData
+            ]
+        )
+        let synchronizer = RemoteSnapshotSynchronizer(
+            transport: transport,
+            localDirectory: localDirectory
+        )
+        let first = try await synchronizer.refresh(taskIDs: [])
+        await transport.setSnapshotDownloadFailure(for: RemotePathPolicy.kanbanDatabase)
 
         do {
             _ = try await synchronizer.refresh(taskIDs: [])
-            XCTFail("Expected invalid downloaded SQLite snapshot to be rejected")
-        } catch SnapshotSynchronizerError.invalidDatabaseSnapshot(let path, _) {
-            XCTAssertEqual(path, RemotePathPolicy.kanbanDatabase)
+            XCTFail("Expected the remote snapshot helper failure to be surfaced")
+        } catch {
+            XCTAssertEqual((error as? CocoaError)?.code, .fileReadUnknown)
         }
         XCTAssertEqual(try Data(contentsOf: first.kanbanDatabase), databaseData)
     }
@@ -207,7 +249,9 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
     private var metadataValues: [String: RemoteFileMetadata]
     private var payloads: [String: Data]
     private var downloads: [String] = []
+    private var snapshotDownloads: [String] = []
     private var tailDownloads: [String] = []
+    private var failingSnapshotDownloads: Set<String> = []
     private var failingTailDownloads: Set<String> = []
 
     init(metadata: [String: RemoteFileMetadata], payloads: [String: Data]) {
@@ -234,6 +278,21 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
         downloads.append(remotePath)
     }
 
+    func downloadDatabaseSnapshot(remotePath: String, to localURL: URL) async throws {
+        if failingSnapshotDownloads.contains(remotePath) {
+            throw CocoaError(.fileReadUnknown)
+        }
+        guard let data = payloads[remotePath] else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try FileManager.default.createDirectory(
+            at: localURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: localURL)
+        snapshotDownloads.append(remotePath)
+    }
+
     func downloadTail(remotePath: String, to localURL: URL, byteLimit: Int) async throws {
         if failingTailDownloads.contains(remotePath) {
             throw CocoaError(.fileReadUnknown)
@@ -254,6 +313,11 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
         failingTailDownloads.insert(path)
     }
 
+    func setSnapshotDownloadFailure(for path: String) {
+        failingSnapshotDownloads.insert(path)
+    }
+
     func downloadedPaths() -> [String] { downloads }
+    func snapshotDownloadedPaths() -> [String] { snapshotDownloads }
     func tailDownloadedPaths() -> [String] { tailDownloads }
 }

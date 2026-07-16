@@ -17,6 +17,7 @@ let package = Package(
         .target(
             name: "HermesMonitorCore",
             dependencies: ["CSQLite"],
+            resources: [.copy("Resources/RemoteSQLiteSnapshot.py")],
             linkerSettings: [
                 .linkedFramework("Security", .when(platforms: [.macOS]))
             ]

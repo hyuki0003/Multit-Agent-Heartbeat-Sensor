@@ -70,6 +70,13 @@ public final class ReadOnlySQLiteDatabase: @unchecked Sendable {
         }
     }
 
+    public func journalMode() throws -> String {
+        let values = try query("PRAGMA journal_mode") { row in
+            try row.requiredString(0).lowercased()
+        }
+        return values.first ?? ""
+    }
+
     func query<T>(
         _ sql: String,
         bindings: [SQLiteBinding] = [],

@@ -8,6 +8,7 @@ A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The fl
 - Xcode 15 or newer (Swift 5.9+)
 - System `/usr/bin/ssh` and `/usr/bin/sftp`
 - SQLite 3 (provided by macOS; Homebrew `sqlite3` is also supported)
+- Remote `/usr/bin/python3` with the standard-library `sqlite3` backup API
 - A populated `known_hosts` file for the remote host
 
 Open `Package.swift` in Xcode, or run:
@@ -27,11 +28,13 @@ swift run HermesMonitorApp
 - `/home/dhlee/.hermes/state.db`
 - `/home/dhlee/.hermes/kanban/logs/<safe-task-id>.log`
 
-The transport invokes `/usr/bin/ssh` for allowlisted GNU `stat` metadata probes and `/usr/bin/sftp` for downloads. It always forces strict host-key checking. Private-key mode uses the staged Keychain key with `IdentitiesOnly=yes` and disables password and keyboard-interactive authentication. Password mode disables public-key and keyboard-interactive authentication and supplies the selected Keychain password through a private `SSH_ASKPASS` helper. SQLite snapshots are opened with a `file:` URI containing `mode=ro`, `SQLITE_OPEN_READONLY`, and a runtime `sqlite3_db_readonly` assertion. The observer never opens the remote databases directly and never requests SQLite write access.
+The transport invokes `/usr/bin/ssh` for exact-allowlisted database snapshots and GNU `stat` metadata probes, while worker-log transfers retain the existing `/usr/bin/sftp` tail path. It always forces strict host-key checking. Private-key mode uses the staged Keychain key with `IdentitiesOnly=yes` and disables password and keyboard-interactive authentication. Password mode disables public-key and keyboard-interactive authentication and supplies the selected Keychain password through a private `SSH_ASKPASS` helper. Local SQLite snapshots are opened with a `file:` URI containing `mode=ro`, `SQLITE_OPEN_READONLY`, and a runtime `sqlite3_db_readonly` assertion.
 
-The small `kanban.db` copy is refreshed every poll. `state.db` is downloaded only when its byte size or nanosecond-resolution GNU `stat` modification token changes. Worker logs are requested only for running tasks; unchanged logs are reused, and changed logs use SFTP resume semantics to transfer at most the final 64 KiB. Each download goes to a partial file and is checked against a second high-resolution metadata read. Database partials must also pass SQLite `PRAGMA quick_check` before atomic installation, so an interrupted or internally inconsistent copy never replaces the last validated cache.
+Both `kanban.db` and `state.db` receive a new coherent snapshot on every refresh, because a committed WAL-only transaction need not change main-file size or modification time. A fixed bundled Python helper opens the remote source strictly with `mode=ro`, copies it through SQLite's online backup API to a `0600` remote temporary file, requires `PRAGMA journal_mode=DELETE`, requires `PRAGMA quick_check` to return exactly `ok`, closes SQLite, and streams the standalone binary database directly to the local partial. The app never checkpoints or mutates the source. Missing Python/SQLite backup capability and helper failures are surfaced; there is no main-file-only SFTP fallback.
 
-These guards cannot turn a concurrently changing live SQLite main file into a transactionally stable snapshot. The allowlist excludes `-wal` and `-shm`, so uncheckpointed WAL frames are intentionally absent, and an in-place change inside the remote filesystem timestamp resolution remains theoretically possible. Deployments requiring a strict guarantee must point the allowlisted database paths at server-produced, stable read-only snapshots created with SQLite's backup API or `VACUUM INTO`, then atomically publish those files.
+The remote artifact exists only for one helper invocation and its main, journal, WAL, and SHM files are removed in `finally` on success, ordinary failure, broken output, or handled SSH cancellation. An uncatchable remote `SIGKILL`, host crash, or power loss can still leave one randomly named `0600` file in the remote system temporary directory for normal OS temporary-file cleanup. Locally, database partials must have a SQLite header, pass `PRAGMA quick_check`, and report DELETE journal mode before atomic installation. Partial sidecars and stale destination `-wal`/`-shm` files are removed so an interrupted, truncated, corrupt, or WAL-dependent stream never replaces the last validated cache.
+
+Worker logs are requested only for running tasks; unchanged logs are reused, and changed logs use SFTP resume semantics to transfer at most the final 64 KiB. Each log download goes to a partial file and is checked against a second high-resolution metadata read before atomic installation.
 
 ## Keychain credential setup
 

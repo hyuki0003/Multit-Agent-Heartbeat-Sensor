@@ -3,6 +3,7 @@ import Foundation
 public protocol RemoteFileTransport: Sendable {
     func metadata(for remotePath: String) async throws -> RemoteFileMetadata
     func download(remotePath: String, to localURL: URL) async throws
+    func downloadDatabaseSnapshot(remotePath: String, to localURL: URL) async throws
     func downloadTail(remotePath: String, to localURL: URL, byteLimit: Int) async throws
 }
 
@@ -18,6 +19,7 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     case emptyPrivateKey
     case emptyPassword
     case missingAskPassHelper
+    case missingSnapshotHelper
 
     public var errorDescription: String? {
         switch self {
@@ -31,6 +33,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "The Keychain SSH password is empty."
         case .missingAskPassHelper:
             return "The private SSH_ASKPASS helper could not be staged."
+        case .missingSnapshotHelper:
+            return "The bundled remote SQLite snapshot helper is missing."
         }
     }
 }
@@ -57,7 +61,7 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
         try validate(remotePath: remotePath)
         return try await Task.detached(priority: .utility) { [self] in
             let command = "/usr/bin/stat --printf='Size: %s\\nModify: %y\\n' -- " +
-                (try shellQuoted(remotePath))
+                (try Self.shellQuoted(remotePath))
             let output = try runSSH(remoteCommand: command)
             return try SFTPStatParser.parse(output: output, path: remotePath)
         }.value
@@ -74,6 +78,36 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
                 batchCommand: "get \(try quoted(remotePath)) \(try quoted(localURL.path))\n"
             )
         }.value
+    }
+
+    public func downloadDatabaseSnapshot(remotePath: String, to localURL: URL) async throws {
+        let approvedPath = try pathPolicy.validateDatabasePath(remotePath)
+        guard let helperURL = Bundle.module.url(
+            forResource: "RemoteSQLiteSnapshot",
+            withExtension: "py"
+        ) else {
+            throw OpenSSHTransportError.missingSnapshotHelper
+        }
+        let helper = try String(contentsOf: helperURL, encoding: .utf8)
+        let remoteCommand = try Self.databaseSnapshotCommand(
+            helper: helper,
+            remotePath: approvedPath,
+            pathPolicy: pathPolicy
+        )
+        let cancellation = ProcessCancellationController()
+
+        try await withTaskCancellationHandler {
+            try await Task.detached(priority: .utility) { [self] in
+                try cancellation.checkCancellation()
+                try streamSSH(
+                    remoteCommand: remoteCommand,
+                    to: localURL,
+                    cancellation: cancellation
+                )
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     public func downloadTail(remotePath: String, to localURL: URL, byteLimit: Int) async throws {
@@ -156,7 +190,23 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
         return "\"\(escaped)\""
     }
 
-    private func shellQuoted(_ value: String) throws -> String {
+    static func databaseSnapshotCommand(
+        helper: String,
+        remotePath: String,
+        pathPolicy: RemotePathPolicy = RemotePathPolicy()
+    ) throws -> String {
+        let approvedPath = try pathPolicy.validateDatabasePath(remotePath)
+        return "/usr/bin/python3 -c \(try shellQuotedScript(helper)) \(try shellQuoted(approvedPath))"
+    }
+
+    private static func shellQuotedScript(_ value: String) throws -> String {
+        guard !value.contains("\0") else {
+            throw OpenSSHTransportError.invalidRemotePath("snapshot helper")
+        }
+        return "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func shellQuoted(_ value: String) throws -> String {
         guard !value.contains("\n"), !value.contains("\r"), !value.contains("\0") else {
             throw OpenSSHTransportError.invalidRemotePath(value)
         }
@@ -183,6 +233,99 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
                 remoteCommand: remoteCommand
             )
         }
+    }
+
+    private func streamSSH(
+        remoteCommand: String,
+        to localURL: URL,
+        cancellation: ProcessCancellationController
+    ) throws {
+        let credential = try credentials.credential(for: configuration.credentialReference)
+        do {
+            try credential.validate(for: configuration.authenticationMode)
+        } catch SSHCredentialValidationError.emptyPrivateKey {
+            throw OpenSSHTransportError.emptyPrivateKey
+        } catch SSHCredentialValidationError.emptyPassword {
+            throw OpenSSHTransportError.emptyPassword
+        }
+
+        let stager = SSHCredentialStager(fileManager: fileManager)
+        let staged = try stager.stage(
+            credential,
+            authenticationMode: configuration.authenticationMode
+        )
+        defer { stager.remove(staged) }
+
+        try fileManager.createDirectory(
+            at: localURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.removeItem(at: localURL)
+        guard fileManager.createFile(atPath: localURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: localURL.path)
+        var completed = false
+        defer {
+            if !completed { try? fileManager.removeItem(at: localURL) }
+        }
+
+        let diagnosticsURL = localURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(localURL.lastPathComponent).\(UUID().uuidString).stderr")
+        guard fileManager.createFile(atPath: diagnosticsURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: diagnosticsURL.path)
+        defer { try? fileManager.removeItem(at: diagnosticsURL) }
+
+        let outputHandle = try FileHandle(forWritingTo: localURL)
+        let errorHandle = try FileHandle(forWritingTo: diagnosticsURL)
+        defer {
+            try? outputHandle.close()
+            try? errorHandle.close()
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = OpenSSHArgumentBuilder.sshArguments(
+            configuration: configuration,
+            identityFile: staged.identityFile,
+            remoteCommand: remoteCommand
+        )
+        let askPassSecret = credential.askPassSecret(for: configuration.authenticationMode)
+        if askPassSecret != nil, staged.askPassFile == nil {
+            throw OpenSSHTransportError.missingAskPassHelper
+        }
+        process.environment = SSHAskPassEnvironment.make(
+            base: ProcessInfo.processInfo.environment,
+            secret: askPassSecret,
+            askPassFile: staged.askPassFile
+        )
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
+
+        try cancellation.register(process)
+        defer { cancellation.clear(process) }
+        try process.run()
+        cancellation.didStart(process)
+        process.waitUntilExit()
+        try outputHandle.synchronize()
+        try errorHandle.synchronize()
+        try cancellation.checkCancellation()
+
+        guard process.terminationStatus == 0 else {
+            let diagnostics = String(
+                decoding: try Data(contentsOf: diagnosticsURL),
+                as: UTF8.self
+            )
+            throw OpenSSHTransportError.processFailed(
+                executable: "/usr/bin/ssh",
+                status: process.terminationStatus,
+                output: diagnostics
+            )
+        }
+        completed = true
     }
 
     private func runOpenSSH(
@@ -250,6 +393,47 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
             )
         }
         return outputText
+    }
+}
+
+private final class ProcessCancellationController: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    func register(_ process: Process) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { throw CancellationError() }
+        self.process = process
+    }
+
+    func clear(_ process: Process) {
+        lock.lock()
+        defer { lock.unlock() }
+        if self.process === process { self.process = nil }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let runningProcess = process
+        lock.unlock()
+        if runningProcess?.isRunning == true { runningProcess?.terminate() }
+    }
+
+    func didStart(_ process: Process) {
+        lock.lock()
+        let shouldTerminate = cancelled && self.process === process
+        lock.unlock()
+        if shouldTerminate && process.isRunning { process.terminate() }
+    }
+
+    func checkCancellation() throws {
+        lock.lock()
+        let isCancelled = cancelled
+        lock.unlock()
+        if isCancelled { throw CancellationError() }
     }
 }
 

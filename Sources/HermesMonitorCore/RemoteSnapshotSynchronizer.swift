@@ -1,6 +1,8 @@
 import Foundation
 #if canImport(Darwin)
+import Darwin
 #elseif canImport(Glibc)
+import Glibc
 #endif
 
 public struct RemoteSnapshotFiles: Equatable, Sendable {
@@ -69,12 +71,11 @@ public actor RemoteSnapshotSynchronizer {
 
         let kanbanURL = databaseDirectory.appendingPathComponent("kanban.db")
         let stateURL = databaseDirectory.appendingPathComponent("state.db")
-        try await synchronize(
+        try await synchronizeDatabase(
             remotePath: RemotePathPolicy.kanbanDatabase,
-            destination: kanbanURL,
-            alwaysDownload: true
+            destination: kanbanURL
         )
-        try await synchronize(
+        try await synchronizeDatabase(
             remotePath: RemotePathPolicy.stateDatabase,
             destination: stateURL
         )
@@ -134,15 +135,25 @@ public actor RemoteSnapshotSynchronizer {
         }
     }
 
+    private func synchronizeDatabase(remotePath: String, destination: URL) async throws {
+        _ = try pathPolicy.validateDatabasePath(remotePath)
+        let partial = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
+        defer { removeSQLiteFamily(at: partial) }
+
+        try await transport.downloadDatabaseSnapshot(remotePath: remotePath, to: partial)
+        try validateDatabaseSnapshot(at: partial, remotePath: remotePath)
+        try removeSQLiteSidecars(at: destination)
+        try install(partial: partial, destination: destination)
+    }
+
     private func synchronize(
         remotePath: String,
         destination: URL,
-        alwaysDownload: Bool = false,
         tailByteLimit: Int? = nil
     ) async throws {
         var before = try await transport.metadata(for: remotePath)
-        if !alwaysDownload,
-           synchronizedMetadata[remotePath] == before,
+        if synchronizedMetadata[remotePath] == before,
            fileManager.fileExists(atPath: destination.path) {
             return
         }
@@ -166,7 +177,6 @@ public actor RemoteSnapshotSynchronizer {
                 continue
             }
 
-            try validateDatabaseSnapshotIfNeeded(at: partial, remotePath: remotePath)
             try install(partial: partial, destination: destination)
             synchronizedMetadata[remotePath] = after
             return
@@ -174,17 +184,30 @@ public actor RemoteSnapshotSynchronizer {
         throw SnapshotSynchronizerError.remoteFileChangedRepeatedly(remotePath)
     }
 
-    private func validateDatabaseSnapshotIfNeeded(at url: URL, remotePath: String) throws {
-        guard remotePath == RemotePathPolicy.kanbanDatabase ||
-                remotePath == RemotePathPolicy.stateDatabase else {
-            return
-        }
+    private func validateDatabaseSnapshot(at url: URL, remotePath: String) throws {
         do {
-            let results = try ReadOnlySQLiteDatabase(url: url).quickCheck()
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let header = try file.read(upToCount: 16) ?? Data()
+            guard header == Data("SQLite format 3\0".utf8) else {
+                throw SnapshotSynchronizerError.invalidDatabaseSnapshot(
+                    path: remotePath,
+                    reason: "missing SQLite format 3 header"
+                )
+            }
+            let database = try ReadOnlySQLiteDatabase(url: url)
+            let results = try database.quickCheck()
             guard results == ["ok"] else {
                 throw SnapshotSynchronizerError.invalidDatabaseSnapshot(
                     path: remotePath,
                     reason: results.joined(separator: "; ")
+                )
+            }
+            let journalMode = try database.journalMode()
+            guard journalMode == "delete" else {
+                throw SnapshotSynchronizerError.invalidDatabaseSnapshot(
+                    path: remotePath,
+                    reason: "journal_mode was \(journalMode), expected delete"
                 )
             }
         } catch let error as SnapshotSynchronizerError {
@@ -194,6 +217,20 @@ public actor RemoteSnapshotSynchronizer {
                 path: remotePath,
                 reason: error.localizedDescription
             )
+        }
+    }
+
+    private func removeSQLiteFamily(at url: URL) {
+        try? fileManager.removeItem(at: url)
+        try? removeSQLiteSidecars(at: url)
+    }
+
+    private func removeSQLiteSidecars(at url: URL) throws {
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let path = url.path + suffix
+            if fileManager.fileExists(atPath: path) {
+                try fileManager.removeItem(atPath: path)
+            }
         }
     }
 
