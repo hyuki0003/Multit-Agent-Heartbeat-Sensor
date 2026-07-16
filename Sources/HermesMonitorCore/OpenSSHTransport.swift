@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public protocol RemoteFileTransport: Sendable {
     func metadata(for remotePath: String) async throws -> RemoteFileMetadata
@@ -16,6 +21,7 @@ public extension RemoteFileTransport {
 public enum OpenSSHTransportError: Error, LocalizedError {
     case invalidRemotePath(String)
     case processFailed(executable: String, status: Int32, output: String)
+    case processTimedOut(executable: String, timeoutSeconds: Int)
     case emptyPrivateKey
     case emptyPassword
     case missingAskPassHelper
@@ -27,6 +33,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "Refusing SSH/SFTP access outside the approved path set: \(path)"
         case .processFailed(let executable, let status, let output):
             return "\(executable) exited with status \(status): \(output)"
+        case .processTimedOut(let executable, let timeoutSeconds):
+            return "\(executable) exceeded the \(timeoutSeconds)-second database snapshot deadline and was terminated. Check the VPN and SSH gateway, then retry."
         case .emptyPrivateKey:
             return "The Keychain SSH private key is empty."
         case .emptyPassword:
@@ -40,6 +48,9 @@ public enum OpenSSHTransportError: Error, LocalizedError {
 }
 
 public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
+    private static let snapshotProcessTimeoutSeconds: TimeInterval = 20
+    private static let processTerminationGraceSeconds: TimeInterval = 1
+
     private let configuration: SSHConnectionConfiguration
     private let credentials: any SSHCredentialProviding
     private let pathPolicy: RemotePathPolicy
@@ -309,7 +320,11 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
         defer { cancellation.clear(process) }
         try process.run()
         cancellation.didStart(process)
-        process.waitUntilExit()
+        try Self.waitForSnapshotProcess(
+            process,
+            cancellation: cancellation,
+            timeoutSeconds: Self.snapshotProcessTimeoutSeconds
+        )
         try outputHandle.synchronize()
         try errorHandle.synchronize()
         try cancellation.checkCancellation()
@@ -326,6 +341,50 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
             )
         }
         completed = true
+    }
+
+    private static func waitForSnapshotProcess(
+        _ process: Process,
+        cancellation: ProcessCancellationController,
+        timeoutSeconds: TimeInterval
+    ) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeoutSeconds
+        while process.isRunning {
+            do {
+                try cancellation.checkCancellation()
+            } catch {
+                terminateAndReap(process)
+                throw error
+            }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                terminateAndReap(process)
+                throw OpenSSHTransportError.processTimedOut(
+                    executable: "/usr/bin/ssh",
+                    timeoutSeconds: Int(timeoutSeconds)
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        process.waitUntilExit()
+        try cancellation.checkCancellation()
+    }
+
+    private static func terminateAndReap(_ process: Process) {
+        if process.isRunning {
+            process.terminate()
+        }
+        let graceDeadline = ProcessInfo.processInfo.systemUptime + processTerminationGraceSeconds
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < graceDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            #if canImport(Darwin)
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            #elseif canImport(Glibc)
+            _ = Glibc.kill(process.processIdentifier, SIGKILL)
+            #endif
+        }
+        process.waitUntilExit()
     }
 
     private func runOpenSSH(
