@@ -249,7 +249,7 @@ public enum OpenSSHArgumentBuilder {
         configuration: SSHConnectionConfiguration,
         identityFile: URL?
     ) -> [String] {
-        var arguments = ["-q", "-P", String(configuration.port)]
+        var arguments = ["-P", String(configuration.port)]
         arguments += authenticationArguments(
             configuration: configuration,
             identityFile: identityFile
@@ -267,7 +267,7 @@ public enum OpenSSHArgumentBuilder {
         identityFile: URL?,
         remoteCommand: String
     ) -> [String] {
-        var arguments = ["-q", "-p", String(configuration.port)]
+        var arguments = ["-p", String(configuration.port)]
         arguments += authenticationArguments(
             configuration: configuration,
             identityFile: identityFile

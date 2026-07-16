@@ -16,6 +16,7 @@ final class SSHConfigurationTests: XCTestCase {
         XCTAssertTrue(arguments.contains("KbdInteractiveAuthentication=no"))
         XCTAssertTrue(arguments.contains("NumberOfPasswordPrompts=1"))
         XCTAssertTrue(arguments.contains("BatchMode=no"))
+        XCTAssertFalse(arguments.contains("-q"))
         XCTAssertFalse(arguments.contains("-i"))
         XCTAssertFalse(arguments.contains("/tmp/must-not-be-used"))
         XCTAssertTrue(arguments.contains("StrictHostKeyChecking=yes"))
@@ -43,6 +44,7 @@ final class SSHConfigurationTests: XCTestCase {
         XCTAssertTrue(arguments.contains("KbdInteractiveAuthentication=no"))
         XCTAssertTrue(arguments.contains("NumberOfPasswordPrompts=1"))
         XCTAssertTrue(arguments.contains("BatchMode=no"))
+        XCTAssertFalse(arguments.contains("-q"))
         XCTAssertFalse(arguments.contains("-i"))
         XCTAssertFalse(arguments.contains("/tmp/must-not-be-used"))
         XCTAssertTrue(arguments.contains("StrictHostKeyChecking=yes"))
@@ -61,7 +63,6 @@ final class SSHConfigurationTests: XCTestCase {
                 identityFile: identityFile
             ),
             [
-                "-q",
                 "-P", "2222",
                 "-i", "/tmp/key",
                 "-o", "IdentitiesOnly=yes",
@@ -84,7 +85,6 @@ final class SSHConfigurationTests: XCTestCase {
                 remoteCommand: command
             ),
             [
-                "-q",
                 "-p", "2222",
                 "-i", "/tmp/key",
                 "-o", "IdentitiesOnly=yes",
