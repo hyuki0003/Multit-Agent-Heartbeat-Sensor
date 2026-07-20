@@ -6,6 +6,13 @@ import HermesMonitorCore
 
 struct MonitorRootView: View {
     @ObservedObject var viewModel: MonitorViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(MonitorPreferenceKeys.taskListMode)
+    private var taskListModeRaw = TaskListMode.expanded.rawValue
+
+    private var taskListMode: TaskListMode {
+        TaskListMode(rawValue: taskListModeRaw) ?? .expanded
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,6 +27,16 @@ struct MonitorRootView: View {
                 )
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
+            }
+
+            if let failure = viewModel.archiveFailure {
+                archiveFailureBanner(failure)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+            } else if let notice = viewModel.archiveNotice {
+                archiveNoticeBanner(notice)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
             }
 
             if let snapshot = viewModel.snapshot {
@@ -41,17 +58,22 @@ struct MonitorRootView: View {
                             TaskListView(
                                 snapshot: snapshot,
                                 selectedTaskID: viewModel.selectedTaskID,
-                                onManualLink: viewModel.link(taskID:to:)
+                                taskListMode: taskListMode,
+                                canArchive: viewModel.canArchiveTasks,
+                                archiveActionsEnabled: !viewModel.isRefreshing,
+                                archiveInFlightTaskIDs: viewModel.archiveInFlightTaskIDs,
+                                onManualLink: viewModel.link(taskID:to:),
+                                onArchive: { task in
+                                    Task { await viewModel.archiveDoneTask(task) }
+                                }
                             )
                             .padding(12)
                         }
+                        .onAppear {
+                            scrollToSelectedTask(viewModel.selectedTaskID, using: proxy)
+                        }
                         .onChange(of: viewModel.selectedTaskID) { taskID in
-                            guard let taskID else { return }
-                            DispatchQueue.main.async {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    proxy.scrollTo(taskID, anchor: .center)
-                                }
-                            }
+                            scrollToSelectedTask(taskID, using: proxy)
                         }
                     }
                 }
@@ -85,7 +107,7 @@ struct MonitorRootView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("read-only remote observer")
+                    Text("remote snapshot monitor")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -97,6 +119,29 @@ struct MonitorRootView: View {
                 ProgressView()
                     .controlSize(.small)
             }
+
+            Button {
+                taskListModeRaw = taskListMode == .compact
+                    ? TaskListMode.expanded.rawValue
+                    : TaskListMode.compact.rawValue
+            } label: {
+                Image(
+                    systemName: taskListMode == .compact
+                        ? "rectangle.expand.vertical"
+                        : "rectangle.compress.vertical"
+                )
+                .font(.system(size: 12, weight: .semibold))
+                .frame(
+                    minWidth: CGFloat(CompactTaskLayout.disclosureHitTarget),
+                    minHeight: CGFloat(CompactTaskLayout.disclosureHitTarget)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(taskListMode == .compact ? "Use expanded task list" : "Use compact task list")
+            .accessibilityLabel(
+                taskListMode == .compact ? "Use expanded task list" : "Use compact task list"
+            )
 
             Button {
                 Task { await viewModel.refresh() }
@@ -175,10 +220,63 @@ struct MonitorRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func scrollToSelectedTask(_ taskID: String?, using proxy: ScrollViewProxy) {
+        guard let taskID else { return }
+        DispatchQueue.main.async {
+            if reduceMotion {
+                proxy.scrollTo(taskID, anchor: .center)
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(taskID, anchor: .center)
+                }
+            }
+        }
+    }
+
     private func summary(_ snapshot: HermesMonitorSnapshot) -> String {
         let running = snapshot.tasks.filter { $0.visualStatus == .running }.count
         return "\(running) running · \(snapshot.tasks.count) tasks · updated " +
             snapshot.refreshedAt.formatted(.relative(presentation: .numeric))
+    }
+
+    private func archiveFailureBanner(_ failure: TaskArchiveFailure) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(.red)
+            Text(failure.message)
+                .font(.caption)
+                .lineLimit(3)
+                .textSelection(.enabled)
+            Spacer(minLength: 4)
+            if failure.canRetry {
+                Button("Try Again") {
+                    Task { await viewModel.retryArchive() }
+                }
+                .buttonStyle(.borderless)
+            }
+            Button("Dismiss") {
+                viewModel.dismissArchiveFeedback()
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func archiveNoticeBanner(_ notice: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(notice)
+                .font(.caption)
+            Spacer(minLength: 4)
+            Button("Dismiss") {
+                viewModel.dismissArchiveFeedback()
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func messageBanner(text: String, color: Color, systemImage: String) -> some View {

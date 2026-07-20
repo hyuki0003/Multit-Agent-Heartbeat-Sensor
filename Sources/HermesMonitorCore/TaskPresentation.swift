@@ -146,6 +146,18 @@ public struct TaskPresentationGroup: Identifiable, Equatable, Sendable {
     public let children: [CorrelatedTask]
 
     public var isStandalone: Bool { children.isEmpty }
+    public var childCount: Int { children.count }
+    public var compactDrillDownTasks: [CorrelatedTask] { children }
+    public var completedChildCount: Int {
+        children.filter {
+            $0.task.status == .done || $0.task.status == .archived
+        }.count
+    }
+    public var childProgressPercent: Int {
+        guard childCount > 0 else { return 0 }
+        return completedChildCount * 100 / childCount
+    }
+
     public var totalCount: Int { children.count + 1 }
     public var completedCount: Int {
         ([parent] + children).filter {
@@ -156,6 +168,37 @@ public struct TaskPresentationGroup: Identifiable, Equatable, Sendable {
     public init(parent: CorrelatedTask, children: [CorrelatedTask]) {
         self.parent = parent
         self.children = children
+    }
+
+    public func liveness(at now: Date = Date()) -> TaskGroupLivenessState {
+        let activeStates = ([parent] + children)
+            .filter { $0.task.status == .running }
+            .map { item -> TaskGroupLivenessState in
+                switch item.task.liveness(at: now) {
+                case .fresh: return .fresh
+                case .stale: return .stale
+                case .dead: return .dead
+                case .inactive: return .unknown
+                }
+            }
+        guard !activeStates.isEmpty else { return .unknown }
+        return activeStates.max(by: { $0.severity < $1.severity }) ?? .unknown
+    }
+}
+
+public enum TaskGroupLivenessState: String, Equatable, Sendable {
+    case unknown
+    case fresh
+    case stale
+    case dead
+
+    fileprivate var severity: Int {
+        switch self {
+        case .unknown: return 0
+        case .fresh: return 1
+        case .stale: return 2
+        case .dead: return 3
+        }
     }
 }
 

@@ -4,6 +4,13 @@ import Foundation
 import HermesMonitorCore
 #endif
 
+struct TaskArchiveFailure: Identifiable {
+    let id = UUID()
+    let task: CorrelatedTask
+    let message: String
+    let canRetry: Bool
+}
+
 @MainActor
 final class MonitorViewModel: ObservableObject {
     @Published private(set) var snapshot: HermesMonitorSnapshot?
@@ -12,22 +19,28 @@ final class MonitorViewModel: ObservableObject {
     @Published private(set) var connectionState: MonitorConnectionState
     @Published private(set) var lastUpdate: Date?
     @Published private(set) var selectedTaskID: String?
+    @Published private(set) var archiveInFlightTaskIDs: Set<String> = []
+    @Published private(set) var archiveFailure: TaskArchiveFailure?
+    @Published private(set) var archiveNotice: String?
 
-    private let client: HermesMonitorClient?
+    private let client: (any HermesMonitorServing)?
+    private let archiveWorkflow: RemoteArchiveWorkflow?
     private let manualLinkStore: ManualSessionLinkStore
     private var manualSessionLinks: [String: String]
     private var monitoringTask: Task<Void, Never>?
     private var persistentErrorMessage: String?
     var onSnapshot: ((HermesMonitorSnapshot) -> Void)?
+    var canArchiveTasks: Bool { archiveWorkflow != nil }
 
     init(
-        client: HermesMonitorClient?,
+        client: (any HermesMonitorServing)?,
         initialError: String? = nil,
         manualLinkStore: ManualSessionLinkStore = ManualSessionLinkStore(
             fileURL: ManualSessionLinkStore.defaultFileURL()
         )
     ) {
         self.client = client
+        self.archiveWorkflow = client.map { RemoteArchiveWorkflow(service: $0) }
         self.manualLinkStore = manualLinkStore
         self.errorMessage = initialError
         self.connectionState = client == nil ? .disconnected : .connecting
@@ -102,18 +115,99 @@ final class MonitorViewModel: ObservableObject {
 
         do {
             let refreshedSnapshot = try await client.refresh()
-            let presentedSnapshot = applyingManualLinks(to: refreshedSnapshot)
-            snapshot = presentedSnapshot
-            lastUpdate = refreshedSnapshot.refreshedAt
-            connectionState = .connected
-            errorMessage = persistentErrorMessage
-            onSnapshot?(presentedSnapshot)
+            apply(refreshedSnapshot)
             return true
         } catch {
             connectionState = .failed
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    func archiveDoneTask(_ requestedTask: CorrelatedTask) async {
+        guard let archiveWorkflow else { return }
+        guard !isRefreshing,
+              !archiveInFlightTaskIDs.contains(requestedTask.id) else { return }
+        guard snapshot?.tasks.first(where: { $0.id == requestedTask.id })?.task.status == .done else {
+            archiveFailure = TaskArchiveFailure(
+                task: requestedTask,
+                message: "Task is no longer Done; it was not removed. Refresh to review its current status.",
+                canRetry: false
+            )
+            return
+        }
+
+        isRefreshing = true
+        archiveInFlightTaskIDs.insert(requestedTask.id)
+        archiveFailure = nil
+        archiveNotice = nil
+        defer {
+            archiveInFlightTaskIDs.remove(requestedTask.id)
+            isRefreshing = false
+        }
+
+        do {
+            let refreshedSnapshot = try await archiveWorkflow.archiveAndRefresh(taskID: requestedTask.id)
+            apply(refreshedSnapshot)
+            archiveNotice = "Removed from active board — archived on server."
+        } catch let error as RemoteArchiveWorkflowError {
+            switch error {
+            case .refreshFailedAfterArchive(_):
+                archiveFailure = TaskArchiveFailure(
+                    task: requestedTask,
+                    message: error.localizedDescription,
+                    canRetry: false
+                )
+            case .taskNoLongerDone:
+                archiveFailure = TaskArchiveFailure(
+                    task: requestedTask,
+                    message: error.localizedDescription,
+                    canRetry: false
+                )
+            case .alreadyInProgress(_):
+                break
+            }
+        } catch {
+            if Self.isArchiveOutcomeUnknown(error) {
+                archiveFailure = TaskArchiveFailure(
+                    task: requestedTask,
+                    message: error.localizedDescription,
+                    canRetry: false
+                )
+            } else if isArchiveStatusConflict(error) {
+                archiveFailure = TaskArchiveFailure(
+                    task: requestedTask,
+                    message: "Task is no longer Done; it was not removed. Refresh to review its current status.",
+                    canRetry: false
+                )
+            } else {
+                archiveFailure = TaskArchiveFailure(
+                    task: requestedTask,
+                    message: "Couldn’t remove “\(requestedTask.task.title)”. " +
+                        "No task record was deleted. \(error.localizedDescription)",
+                    canRetry: true
+                )
+            }
+        }
+    }
+
+    private static func isArchiveOutcomeUnknown(_ error: Error) -> Bool {
+        if let transportError = error as? OpenSSHTransportError,
+           case .archiveProcessTimedOut = transportError {
+            return true
+        }
+        return error is CancellationError
+    }
+
+    func retryArchive() async {
+        guard let failure = archiveFailure, failure.canRetry else { return }
+        archiveFailure = nil
+        await archiveDoneTask(failure.task)
+    }
+
+    func dismissArchiveFeedback() {
+        archiveFailure = nil
+        archiveNotice = nil
     }
 
     func link(taskID: String, to sessionID: String) {
@@ -138,6 +232,23 @@ final class MonitorViewModel: ObservableObject {
 
     func selectTask(_ taskID: String) {
         selectedTaskID = taskID
+    }
+
+    private func apply(_ refreshedSnapshot: HermesMonitorSnapshot) {
+        let presentedSnapshot = applyingManualLinks(to: refreshedSnapshot)
+        snapshot = presentedSnapshot
+        lastUpdate = refreshedSnapshot.refreshedAt
+        connectionState = .connected
+        errorMessage = persistentErrorMessage
+        onSnapshot?(presentedSnapshot)
+    }
+
+    private func isArchiveStatusConflict(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("not done") ||
+            message.contains("only done") ||
+            message.contains("must be done") ||
+            (message.contains("task") && message.contains("not found"))
     }
 
     private func applyingManualLinks(

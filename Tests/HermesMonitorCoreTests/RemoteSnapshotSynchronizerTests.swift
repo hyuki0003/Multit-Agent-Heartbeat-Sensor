@@ -150,7 +150,7 @@ final class RemoteSnapshotSynchronizerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: first.kanbanDatabase), databaseData)
     }
 
-    func testTransientLogFailureKeepsLastSuccessfulTail() async throws {
+    func testTransientLogFailureKeepsLastSuccessfulTailWithoutGlobalWarningSpam() async throws {
         let localDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-log-cache-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: localDirectory) }
@@ -176,19 +176,82 @@ final class RemoteSnapshotSynchronizerTests: XCTestCase {
                 logPath: Data("last\n".utf8)
             ]
         )
+        let diagnostics = RecordingSnapshotDiagnosticSink()
         let synchronizer = RemoteSnapshotSynchronizer(
             transport: transport,
-            localDirectory: localDirectory
+            localDirectory: localDirectory,
+            diagnostics: diagnostics
         )
         let first = try await synchronizer.refresh(taskIDs: ["t_cache"])
         await transport.setMetadata(.init(path: logPath, size: 6, modificationToken: "l2"))
         await transport.setTailDownloadFailure(for: logPath)
 
         let second = try await synchronizer.refresh(taskIDs: ["t_cache"])
+        let repeated = try await synchronizer.refresh(taskIDs: ["t_cache"])
 
         XCTAssertEqual(second.workerLogs["t_cache"], first.workerLogs["t_cache"])
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(second.workerLogs["t_cache"])), Data("last\n".utf8))
+        XCTAssertTrue(second.warnings.isEmpty)
+        XCTAssertTrue(repeated.warnings.isEmpty)
+        let failureDiagnostics = await diagnostics.recorded()
+        XCTAssertEqual(failureDiagnostics.map(\.kind), [.failed])
+
+        try FileManager.default.removeItem(at: XCTUnwrap(second.workerLogs["t_cache"]))
+        let withoutCache = try await synchronizer.refresh(taskIDs: ["t_cache"])
+        XCTAssertNil(withoutCache.workerLogs["t_cache"])
+        XCTAssertTrue(withoutCache.warnings.isEmpty)
+        let noCacheDiagnostics = await diagnostics.recorded()
+        XCTAssertEqual(noCacheDiagnostics.map(\.kind), [.failed])
+
+        await transport.clearTailDownloadFailure(for: logPath)
+        _ = try await synchronizer.refresh(taskIDs: ["t_cache"])
+        let recoveredDiagnostics = await diagnostics.recorded()
+        XCTAssertEqual(recoveredDiagnostics.map(\.kind), [.failed, .recovered])
+    }
+
+    func testLocalLogCacheFailureRemainsAnActionableGlobalWarning() async throws {
+        let localDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-log-actionable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: localDirectory) }
+        let logPath = try RemotePathPolicy().workerLogPath(taskID: "t_action")
+        let databaseData = try sqliteDatabaseData()
+        let transport = FakeRemoteFileTransport(
+            metadata: [
+                RemotePathPolicy.kanbanDatabase: .init(
+                    path: RemotePathPolicy.kanbanDatabase,
+                    size: Int64(databaseData.count),
+                    modificationToken: "k1"
+                ),
+                RemotePathPolicy.stateDatabase: .init(
+                    path: RemotePathPolicy.stateDatabase,
+                    size: Int64(databaseData.count),
+                    modificationToken: "s1"
+                ),
+                logPath: .init(path: logPath, size: 5, modificationToken: "l1")
+            ],
+            payloads: [
+                RemotePathPolicy.kanbanDatabase: databaseData,
+                RemotePathPolicy.stateDatabase: databaseData,
+                logPath: Data("last\n".utf8)
+            ]
+        )
+        let diagnostics = RecordingSnapshotDiagnosticSink()
+        let synchronizer = RemoteSnapshotSynchronizer(
+            transport: transport,
+            localDirectory: localDirectory,
+            diagnostics: diagnostics
+        )
+        let first = try await synchronizer.refresh(taskIDs: ["t_action"])
+        await transport.setMetadata(.init(path: logPath, size: 6, modificationToken: "l2"))
+        await transport.setActionableTailDownloadFailure(for: logPath)
+
+        let second = try await synchronizer.refresh(taskIDs: ["t_action"])
+        let recorded = await diagnostics.recorded()
+
+        XCTAssertEqual(second.workerLogs["t_action"], first.workerLogs["t_action"])
         XCTAssertEqual(second.warnings.count, 1)
+        XCTAssertTrue(second.warnings[0].contains("Could not refresh worker log"))
+        XCTAssertTrue(recorded.isEmpty)
     }
 
     func testInvalidTaskIDCannotReuseFileOutsideLogCache() async throws {
@@ -253,6 +316,7 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
     private var tailDownloads: [String] = []
     private var failingSnapshotDownloads: Set<String> = []
     private var failingTailDownloads: Set<String> = []
+    private var actionableTailDownloads: Set<String> = []
 
     init(metadata: [String: RemoteFileMetadata], payloads: [String: Data]) {
         self.metadataValues = metadata
@@ -294,8 +358,15 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
     }
 
     func downloadTail(remotePath: String, to localURL: URL, byteLimit: Int) async throws {
+        if actionableTailDownloads.contains(remotePath) {
+            throw CocoaError(.fileWriteNoPermission)
+        }
         if failingTailDownloads.contains(remotePath) {
-            throw CocoaError(.fileReadUnknown)
+            throw OpenSSHTransportError.processFailed(
+                executable: "/usr/bin/sftp",
+                status: 255,
+                output: "Connection reset by peer"
+            )
         }
         try await download(remotePath: remotePath, to: localURL)
         tailDownloads.append(remotePath)
@@ -313,6 +384,14 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
         failingTailDownloads.insert(path)
     }
 
+    func clearTailDownloadFailure(for path: String) {
+        failingTailDownloads.remove(path)
+    }
+
+    func setActionableTailDownloadFailure(for path: String) {
+        actionableTailDownloads.insert(path)
+    }
+
     func setSnapshotDownloadFailure(for path: String) {
         failingSnapshotDownloads.insert(path)
     }
@@ -320,4 +399,14 @@ private actor FakeRemoteFileTransport: RemoteFileTransport {
     func downloadedPaths() -> [String] { downloads }
     func snapshotDownloadedPaths() -> [String] { snapshotDownloads }
     func tailDownloadedPaths() -> [String] { tailDownloads }
+}
+
+private actor RecordingSnapshotDiagnosticSink: RemoteSnapshotDiagnosticSink {
+    private var diagnostics: [RemoteLogRefreshDiagnostic] = []
+
+    func record(_ diagnostic: RemoteLogRefreshDiagnostic) async {
+        diagnostics.append(diagnostic)
+    }
+
+    func recorded() -> [RemoteLogRefreshDiagnostic] { diagnostics }
 }

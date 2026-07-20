@@ -41,6 +41,40 @@ public enum SnapshotSynchronizerError: Error, LocalizedError {
     }
 }
 
+public enum RemoteLogRefreshDiagnosticKind: String, Equatable, Sendable {
+    case failed
+    case recovered
+}
+
+public struct RemoteLogRefreshDiagnostic: Equatable, Sendable {
+    public let taskID: String
+    public let kind: RemoteLogRefreshDiagnosticKind
+    public let message: String
+
+    public init(taskID: String, kind: RemoteLogRefreshDiagnosticKind, message: String) {
+        self.taskID = taskID
+        self.kind = kind
+        self.message = message
+    }
+}
+
+public protocol RemoteSnapshotDiagnosticSink: Sendable {
+    func record(_ diagnostic: RemoteLogRefreshDiagnostic) async
+}
+
+public struct SystemRemoteSnapshotDiagnosticSink: RemoteSnapshotDiagnosticSink {
+    public init() {}
+
+    public func record(_ diagnostic: RemoteLogRefreshDiagnostic) async {
+        NSLog(
+            "HermesMonitor remote log %@ for %@: %@",
+            diagnostic.kind.rawValue,
+            diagnostic.taskID,
+            diagnostic.message
+        )
+    }
+}
+
 public actor RemoteSnapshotSynchronizer {
     private static let workerLogByteLimit = 64 * 1_024
 
@@ -48,18 +82,22 @@ public actor RemoteSnapshotSynchronizer {
     private let localDirectory: URL
     private let pathPolicy: RemotePathPolicy
     private let fileManager: FileManager
+    private let diagnostics: any RemoteSnapshotDiagnosticSink
     private var synchronizedMetadata: [String: RemoteFileMetadata] = [:]
+    private var failedLogFingerprints: [String: String] = [:]
 
     public init(
         transport: any RemoteFileTransport,
         localDirectory: URL,
         pathPolicy: RemotePathPolicy = RemotePathPolicy(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        diagnostics: any RemoteSnapshotDiagnosticSink = SystemRemoteSnapshotDiagnosticSink()
     ) {
         self.transport = transport
         self.localDirectory = localDirectory
         self.pathPolicy = pathPolicy
         self.fileManager = fileManager
+        self.diagnostics = diagnostics
     }
 
     public func refresh(taskIDs: [String]) async throws -> RemoteSnapshotFiles {
@@ -92,12 +130,40 @@ public actor RemoteSnapshotSynchronizer {
                         tailByteLimit: Self.workerLogByteLimit
                     )
                     logFiles[taskID] = destination
+                    if failedLogFingerprints.removeValue(forKey: taskID) != nil {
+                        await diagnostics.record(
+                            RemoteLogRefreshDiagnostic(
+                                taskID: taskID,
+                                kind: .recovered,
+                                message: "Remote worker log refresh recovered."
+                            )
+                        )
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error where isTransientLogReadFailure(error) {
+                    let fingerprint = Self.logFailureFingerprint(error)
+                    if failedLogFingerprints[taskID] != fingerprint {
+                        failedLogFingerprints[taskID] = fingerprint
+                        await diagnostics.record(
+                            RemoteLogRefreshDiagnostic(
+                                taskID: taskID,
+                                kind: .failed,
+                                message: error.localizedDescription
+                            )
+                        )
+                    }
+                    if fileManager.fileExists(atPath: destination.path) {
+                        logFiles[taskID] = destination
+                    }
                 } catch {
-                    warnings.append("Could not refresh log for \(taskID): \(error.localizedDescription)")
+                    warnings.append("Could not refresh worker log for \(taskID): \(error.localizedDescription)")
                     if fileManager.fileExists(atPath: destination.path) {
                         logFiles[taskID] = destination
                     }
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 warnings.append("Rejected log path for \(taskID): \(error.localizedDescription)")
             }
@@ -110,6 +176,47 @@ public actor RemoteSnapshotSynchronizer {
             warnings: warnings,
             refreshedAt: Date()
         )
+    }
+
+    private func isTransientLogReadFailure(_ error: Error) -> Bool {
+        if let transportError = error as? OpenSSHTransportError {
+            switch transportError {
+            case .processTimedOut(_, _):
+                return true
+            case .processFailed(_, _, let output):
+                let normalized = output.lowercased()
+                return [
+                    "connection reset",
+                    "connection timed out",
+                    "operation timed out",
+                    "connection refused",
+                    "broken pipe",
+                    "connection closed",
+                    "network is unreachable",
+                    "no route to host",
+                    "no such file"
+                ].contains { normalized.contains($0) }
+            default:
+                return false
+            }
+        }
+        if let posixError = error as? POSIXError {
+            return [
+                .ECONNRESET,
+                .ECONNABORTED,
+                .ECONNREFUSED,
+                .ETIMEDOUT,
+                .EPIPE,
+                .ENETDOWN,
+                .ENETUNREACH,
+                .EHOSTUNREACH
+            ].contains(posixError.code)
+        }
+        return false
+    }
+
+    private static func logFailureFingerprint(_ error: Error) -> String {
+        "\(String(reflecting: type(of: error))):\(error.localizedDescription)"
     }
 
     public nonisolated func poll(

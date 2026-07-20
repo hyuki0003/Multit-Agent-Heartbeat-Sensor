@@ -12,6 +12,11 @@ struct TaskCardView: View {
     let availableSessions: [HermesSession]
     let isSelected: Bool
     let onManualLink: (String, String) -> Void
+    let canArchive: Bool
+    let archiveActionsEnabled: Bool
+    let isArchiving: Bool
+    let showsWaveform: Bool
+    let onArchive: () -> Void
 
     @State private var showsLog = false
     @State private var showsDetail = false
@@ -108,12 +113,14 @@ struct TaskCardView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                ECGWaveformView(
-                    status: item.visualStatus,
-                    liveness: liveness,
-                    lastHeartbeatAt: item.task.lastHeartbeatAt
-                )
-                .frame(minWidth: 105, idealWidth: 130, maxWidth: 155)
+                if showsWaveform {
+                    ECGWaveformView(
+                        status: item.visualStatus,
+                        liveness: liveness,
+                        lastHeartbeatAt: item.task.lastHeartbeatAt
+                    )
+                    .frame(minWidth: 105, idealWidth: 130, maxWidth: 155)
+                }
             }
 
             HStack(spacing: 12) {
@@ -139,6 +146,14 @@ struct TaskCardView: View {
                     }
                 }
                 Spacer()
+                if canArchive && item.task.status == .done {
+                    TaskArchiveControl(
+                        item: item,
+                        isBusy: isArchiving,
+                        isEnabled: archiveActionsEnabled,
+                        onConfirm: onArchive
+                    )
+                }
             }
 
             if showsLog, !logLines.isEmpty {

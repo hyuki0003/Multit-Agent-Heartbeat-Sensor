@@ -1,6 +1,6 @@
 # Agent's Heartbeat Monitor for Hermes
 
-A native SwiftUI observer for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. A menu bar item, system-wide hotkey, and proactive notifications keep the monitor available while other apps are focused.
+A native SwiftUI monitor for Hermes Kanban state on a remote Linux host. The floating, resizable panel groups linked tasks, renders live heartbeat/ECG state, exposes expandable worker-log tails and task details, and refreshes its read-only SSH/SFTP snapshot every 10 seconds. Its only bounded write-through action archives an explicitly confirmed Done task through the official remote Hermes CLI. A menu bar item, system-wide hotkey, and proactive notifications keep the monitor available while other apps are focused.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ swift run HermesMonitorApp
 
 `swift run HermesMonitorApp` launches the UI, but UserNotifications is available only from a bundled `.app`.
 
-## Read-only boundary
+## Read-only snapshot and bounded write-through boundary
 
 `RemotePathPolicy` permits reads only from:
 
@@ -28,9 +28,9 @@ swift run HermesMonitorApp
 - `/home/dhlee/.hermes/state.db`
 - `/home/dhlee/.hermes/kanban/logs/<safe-task-id>.log`
 
-The transport invokes `/usr/bin/ssh` for exact-allowlisted database snapshots and GNU `stat` metadata probes, while worker-log transfers retain the existing `/usr/bin/sftp` tail path. It always forces strict host-key checking. Private-key mode uses the staged Keychain key with `IdentitiesOnly=yes` and disables password and keyboard-interactive authentication. Password mode disables public-key and keyboard-interactive authentication and supplies the selected Keychain password through a private `SSH_ASKPASS` helper. Local SQLite snapshots are opened with a `file:` URI containing `mode=ro`, `SQLITE_OPEN_READONLY`, and a runtime `sqlite3_db_readonly` assertion.
+The transport invokes `/usr/bin/ssh` for exact-allowlisted database snapshots and GNU `stat` metadata probes, while worker-log transfers retain the existing `/usr/bin/sftp` tail path. For a confirmed task whose authoritative remote status is re-fetched as Done immediately before the action, the UI can run only `hermes kanban archive <canonical-task-id>` against the pinned default board/database; it never invokes `archive --rm`, hard-deletes a task, or writes SQLite directly. The installed CLI has no atomic Done-only precondition, so a residual TOCTOU window remains between that re-fetch and the archive command; the server-side command remains the final authority, and a timeout is reported as an unknown remote outcome rather than as a safe failure to retry. All SSH paths force strict host-key checking. Private-key mode uses the staged Keychain key with `IdentitiesOnly=yes` and disables password and keyboard-interactive authentication. Password mode disables public-key and keyboard-interactive authentication and supplies the selected Keychain password through a private `SSH_ASKPASS` helper. Local SQLite snapshots are opened with a `file:` URI containing `mode=ro`, `SQLITE_OPEN_READONLY`, and a runtime `sqlite3_db_readonly` assertion.
 
-Both `kanban.db` and `state.db` receive a new coherent snapshot on every refresh, because a committed WAL-only transaction need not change main-file size or modification time. A fixed bundled Python helper opens the remote source strictly with `mode=ro`, copies it through SQLite's online backup API to a `0600` remote temporary file, requires `PRAGMA journal_mode=DELETE`, requires `PRAGMA quick_check` to return exactly `ok`, closes SQLite, and streams the standalone binary database directly to the local partial. The app never checkpoints or mutates the source. Missing Python/SQLite backup capability and helper failures are surfaced; there is no main-file-only SFTP fallback.
+Both `kanban.db` and `state.db` receive a new coherent snapshot on every refresh, because a committed WAL-only transaction need not change main-file size or modification time. A fixed bundled Python helper opens the remote source strictly with `mode=ro`, copies it through SQLite's online backup API to a `0600` remote temporary file, requires `PRAGMA journal_mode=DELETE`, requires `PRAGMA quick_check` to return exactly `ok`, closes SQLite, and streams the standalone binary database directly to the local partial. The snapshot helper never checkpoints or mutates the source. Missing Python/SQLite backup capability and helper failures are surfaced; there is no main-file-only SFTP fallback.
 
 The remote artifact exists only for one helper invocation and its main, journal, WAL, and SHM files are removed in `finally` on success, ordinary failure, broken output, or handled SSH cancellation. An uncatchable remote `SIGKILL`, host crash, or power loss can still leave one randomly named `0600` file in the remote system temporary directory for normal OS temporary-file cleanup. Locally, database partials must have a SQLite header, pass `PRAGMA quick_check`, and report DELETE journal mode before atomic installation. Partial sidecars and stale destination `-wal`/`-shm` files are removed so an interrupted, truncated, corrupt, or WAL-dependent stream never replaces the last validated cache.
 

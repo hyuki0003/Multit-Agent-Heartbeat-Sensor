@@ -22,6 +22,7 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     case invalidRemotePath(String)
     case processFailed(executable: String, status: Int32, output: String)
     case processTimedOut(executable: String, timeoutSeconds: Int)
+    case archiveProcessTimedOut(timeoutSeconds: Int)
     case emptyPrivateKey
     case emptyPassword
     case missingAskPassHelper
@@ -35,6 +36,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "\(executable) exited with status \(status): \(output)"
         case .processTimedOut(let executable, let timeoutSeconds):
             return "\(executable) exceeded the \(timeoutSeconds)-second database snapshot deadline and was terminated. Check the VPN and SSH gateway, then retry."
+        case .archiveProcessTimedOut(let timeoutSeconds):
+            return "The remote Hermes archive exceeded \(timeoutSeconds) seconds. Its remote outcome is unknown because the command may have completed before the connection was terminated. Refresh the board before taking another action."
         case .emptyPrivateKey:
             return "The Keychain SSH private key is empty."
         case .emptyPassword:
@@ -47,9 +50,11 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     }
 }
 
-public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
+public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving, @unchecked Sendable {
     private static let snapshotProcessTimeoutSeconds: TimeInterval = 20
+    private static let archiveProcessTimeoutSeconds: TimeInterval = 20
     private static let processTerminationGraceSeconds: TimeInterval = 1
+    private static let archiveDiagnosticByteLimit = 8 * 1_024
 
     private let configuration: SSHConnectionConfiguration
     private let credentials: any SSHCredentialProviding
@@ -113,6 +118,23 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
                 try streamSSH(
                     remoteCommand: remoteCommand,
                     to: localURL,
+                    cancellation: cancellation
+                )
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    public func archiveDoneTask(taskID: String) async throws {
+        let remoteCommand = try HermesKanbanArchiveCommand.remoteCommand(taskID: taskID)
+        let cancellation = ProcessCancellationController()
+
+        try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) { [self] in
+                try cancellation.checkCancellation()
+                try runBoundedArchiveSSH(
+                    remoteCommand: remoteCommand,
                     cancellation: cancellation
                 )
             }.value
@@ -343,6 +365,157 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
         completed = true
     }
 
+    private func runBoundedArchiveSSH(
+        remoteCommand: String,
+        cancellation: ProcessCancellationController
+    ) throws {
+        let credential = try credentials.credential(for: configuration.credentialReference)
+        do {
+            try credential.validate(for: configuration.authenticationMode)
+        } catch SSHCredentialValidationError.emptyPrivateKey {
+            throw OpenSSHTransportError.emptyPrivateKey
+        } catch SSHCredentialValidationError.emptyPassword {
+            throw OpenSSHTransportError.emptyPassword
+        }
+
+        let stager = SSHCredentialStager(fileManager: fileManager)
+        let staged = try stager.stage(
+            credential,
+            authenticationMode: configuration.authenticationMode
+        )
+        defer { stager.remove(staged) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = OpenSSHArgumentBuilder.sshArguments(
+            configuration: configuration,
+            identityFile: staged.identityFile,
+            remoteCommand: remoteCommand
+        )
+        let askPassSecret = credential.askPassSecret(for: configuration.authenticationMode)
+        if askPassSecret != nil, staged.askPassFile == nil {
+            throw OpenSSHTransportError.missingAskPassHelper
+        }
+        process.environment = SSHAskPassEnvironment.make(
+            base: ProcessInfo.processInfo.environment,
+            secret: askPassSecret,
+            askPassFile: staged.askPassFile
+        )
+        let retainedByteLimit = Self.archiveDiagnosticByteLimit +
+            (askPassSecret?.utf8.count ?? 0)
+        let outputCapture = BoundedProcessOutputCapture(byteLimit: retainedByteLimit)
+        let errorCapture = BoundedProcessOutputCapture(byteLimit: retainedByteLimit)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = outputCapture.pipe
+        process.standardError = errorCapture.pipe
+
+        try cancellation.register(process)
+        defer { cancellation.clear(process) }
+        outputCapture.start()
+        errorCapture.start()
+        do {
+            try process.run()
+        } catch {
+            outputCapture.closeParentWriteEnd()
+            errorCapture.closeParentWriteEnd()
+            _ = outputCapture.finish()
+            _ = errorCapture.finish()
+            throw error
+        }
+        outputCapture.closeParentWriteEnd()
+        errorCapture.closeParentWriteEnd()
+        cancellation.didStart(process)
+        do {
+            try Self.waitForArchiveProcess(
+                process,
+                timeoutSeconds: Self.archiveProcessTimeoutSeconds,
+                cancellation: cancellation
+            )
+        } catch {
+            _ = outputCapture.finish()
+            _ = errorCapture.finish()
+            throw error
+        }
+        let output = outputCapture.finish()
+        let error = errorCapture.finish()
+        try cancellation.checkCancellation()
+
+        guard process.terminationStatus == 0 else {
+            throw OpenSSHTransportError.processFailed(
+                executable: "/usr/bin/ssh",
+                status: process.terminationStatus,
+                output: Self.archiveDiagnostics(
+                    output: output,
+                    error: error,
+                    secret: askPassSecret
+                )
+            )
+        }
+    }
+
+    static func waitForArchiveProcess(
+        _ process: Process,
+        timeoutSeconds: TimeInterval
+    ) throws {
+        try waitForArchiveProcess(
+            process,
+            timeoutSeconds: timeoutSeconds,
+            cancellation: nil
+        )
+    }
+
+    private static func waitForArchiveProcess(
+        _ process: Process,
+        timeoutSeconds: TimeInterval,
+        cancellation: ProcessCancellationController?
+    ) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeoutSeconds
+        while process.isRunning {
+            do {
+                try cancellation?.checkCancellation()
+            } catch {
+                terminateAndReap(process)
+                throw error
+            }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                terminateAndReap(process)
+                throw OpenSSHTransportError.archiveProcessTimedOut(
+                    timeoutSeconds: max(1, Int(timeoutSeconds.rounded(.up)))
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        process.waitUntilExit()
+        try cancellation?.checkCancellation()
+    }
+
+    static func archiveDiagnostics(
+        output: Data,
+        error: Data,
+        secret: String?
+    ) -> String {
+        let values = [output, error].map { String(decoding: $0, as: UTF8.self) }
+        var combined = values.filter { !$0.isEmpty }.joined(separator: "\n")
+        if let secret, !secret.isEmpty {
+            combined = combined.replacingOccurrences(of: secret, with: "<redacted>")
+        }
+        combined = String(combined.unicodeScalars.map { scalar in
+            if scalar == "\n" || scalar == "\t" || scalar.value >= 32 {
+                return Character(String(scalar))
+            }
+            return "�"
+        })
+        guard !combined.isEmpty else { return "No remote diagnostics." }
+        var bounded = String(
+            decoding: combined.utf8.prefix(archiveDiagnosticByteLimit),
+            as: UTF8.self
+        )
+        while bounded.utf8.count > archiveDiagnosticByteLimit {
+            bounded.removeLast()
+        }
+        return bounded
+    }
+
     private static func waitForSnapshotProcess(
         _ process: Process,
         cancellation: ProcessCancellationController,
@@ -452,6 +625,60 @@ public final class OpenSSHTransport: RemoteFileTransport, @unchecked Sendable {
             )
         }
         return outputText
+    }
+}
+
+final class BoundedProcessOutputCapture: @unchecked Sendable {
+    let pipe = Pipe()
+
+    private let byteLimit: Int
+    private let lock = NSLock()
+    private let readGroup = DispatchGroup()
+    private let readQueue = DispatchQueue(
+        label: "HermesMonitor.BoundedProcessOutputCapture",
+        qos: .utility
+    )
+    private var data = Data()
+
+    init(byteLimit: Int) {
+        self.byteLimit = max(0, byteLimit)
+    }
+
+    func start() {
+        readGroup.enter()
+        readQueue.async { [self] in
+            defer { readGroup.leave() }
+            while true {
+                do {
+                    guard let chunk = try pipe.fileHandleForReading.read(upToCount: 64 * 1_024),
+                          !chunk.isEmpty else {
+                        return
+                    }
+                    append(chunk)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    func closeParentWriteEnd() {
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    func finish() -> Data {
+        readGroup.wait()
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    private func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = byteLimit - data.count
+        guard remaining > 0 else { return }
+        data.append(contentsOf: chunk.prefix(remaining))
     }
 }
 

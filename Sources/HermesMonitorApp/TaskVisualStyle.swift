@@ -45,4 +45,46 @@ extension TaskLivenessState {
         case .dead: return .red
         }
     }
+
+    var compactDisplayName: String {
+        self == .inactive ? "UNKNOWN" : displayName
+    }
+
+    var compactSymbolName: String {
+        switch self {
+        case .inactive: return "heart"
+        case .fresh: return "heart.fill"
+        case .stale: return "heart.circle.fill"
+        case .dead: return "heart.slash.fill"
+        }
+    }
+}
+
+extension TaskGroupLivenessState {
+    var displayName: String {
+        switch self {
+        case .unknown: return "UNKNOWN"
+        case .fresh: return "FRESH"
+        case .stale: return "STALE"
+        case .dead: return "DEAD"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .unknown: return .secondary
+        case .fresh: return .green
+        case .stale: return .yellow
+        case .dead: return .red
+        }
+    }
+
+    var compactSymbolName: String {
+        switch self {
+        case .unknown: return "heart"
+        case .fresh: return "heart.fill"
+        case .stale: return "heart.circle.fill"
+        case .dead: return "heart.slash.fill"
+        }
+    }
 }

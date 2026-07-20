@@ -15,6 +15,8 @@ enum MonitorPreferenceKeys {
     static let hotKeyUsesShift = "HermesMonitor.hotKey.shift"
     static let hotKeyUsesOption = "HermesMonitor.hotKey.option"
     static let hotKeyUsesControl = "HermesMonitor.hotKey.control"
+    static let taskListMode = TaskListModePreference.taskListMode
+    static let collapsedGroupIDs = CollapsedTaskGroupPreference.collapsedGroupIDs
 }
 
 struct MonitorHotKeyPreference {

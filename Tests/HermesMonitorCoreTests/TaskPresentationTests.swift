@@ -91,14 +91,17 @@ final class TaskPresentationTests: XCTestCase {
         XCTAssertEqual(groups.map(\.parent.id), ["parent", "standalone"])
         XCTAssertEqual(groups[0].children.map(\.id), ["child", "grandchild"])
         XCTAssertFalse(groups[0].isStandalone)
-        XCTAssertEqual(groups[0].completedCount, 0)
-        XCTAssertEqual(groups[0].totalCount, 3)
+        XCTAssertEqual(groups[0].completedChildCount, 0)
+        XCTAssertEqual(groups[0].childCount, 2)
+        XCTAssertEqual(groups[0].childProgressPercent, 0)
+        XCTAssertEqual(groups[0].compactDrillDownTasks.map(\.id), ["child", "grandchild"])
+        XCTAssertFalse(groups[0].compactDrillDownTasks.contains(where: { $0.id == parent.id }))
         XCTAssertTrue(groups[1].children.isEmpty)
         XCTAssertTrue(groups[1].isStandalone)
         XCTAssertEqual(Set(groups.flatMap { [$0.parent.id] + $0.children.map(\.id) }).count, 4)
     }
 
-    func testGroupProgressCountsDoneAndArchivedTasks() {
+    func testGroupProgressCountsOnlyDoneAndArchivedChildrenUsingIntegerPercent() {
         let parent = makeCorrelated(task: makeTask(id: "parent", status: .done))
         let done = makeCorrelated(task: makeTask(id: "done", status: .done))
         let archived = makeCorrelated(task: makeTask(id: "archived", status: .archived))
@@ -109,8 +112,79 @@ final class TaskPresentationTests: XCTestCase {
             children: [done, archived, running]
         )
 
+        XCTAssertEqual(group.completedChildCount, 2)
+        XCTAssertEqual(group.childCount, 3)
+        XCTAssertEqual(group.childProgressPercent, 66)
         XCTAssertEqual(group.completedCount, 3)
         XCTAssertEqual(group.totalCount, 4)
+    }
+
+    func testGroupProgressHandlesZeroAndCompleteChildren() {
+        let parent = makeCorrelated(task: makeTask(id: "parent", status: .done))
+        let empty = TaskPresentationGroup(parent: parent, children: [])
+        let complete = TaskPresentationGroup(
+            parent: parent,
+            children: [
+                makeCorrelated(task: makeTask(id: "done", status: .done)),
+                makeCorrelated(task: makeTask(id: "archived", status: .archived))
+            ]
+        )
+
+        XCTAssertEqual(empty.childProgressPercent, 0)
+        XCTAssertEqual(complete.childProgressPercent, 100)
+    }
+
+    func testGroupLivenessIsIndependentWorstRunningMemberState() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let freshParent = makeCorrelated(task: makeTask(id: "parent", heartbeatAge: 10, now: now))
+        let completedParent = makeCorrelated(
+            task: makeTask(id: "completed", status: .done, now: now)
+        )
+        let freshChild = makeCorrelated(task: makeTask(id: "fresh", heartbeatAge: 10, now: now))
+        let staleChild = makeCorrelated(task: makeTask(id: "stale", heartbeatAge: 130, now: now))
+        let deadChild = makeCorrelated(task: makeTask(id: "dead", heartbeatAge: nil, now: now))
+
+        XCTAssertEqual(
+            TaskPresentationGroup(parent: completedParent, children: [freshChild]).liveness(at: now),
+            .fresh
+        )
+        XCTAssertEqual(
+            TaskPresentationGroup(parent: freshParent, children: [staleChild]).liveness(at: now),
+            .stale
+        )
+        XCTAssertEqual(
+            TaskPresentationGroup(parent: freshParent, children: [staleChild, deadChild])
+                .liveness(at: now),
+            .dead
+        )
+
+        XCTAssertEqual(
+            TaskPresentationGroup(parent: completedParent, children: []).liveness(at: now),
+            .unknown
+        )
+    }
+
+    func testTaskListModeAndCollapsedGroupsRoundTripThroughUserDefaults() throws {
+        let suiteName = "TaskPresentationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(TaskListModePreference.load(defaults: defaults), .expanded)
+        TaskListModePreference.save(.compact, defaults: defaults)
+        XCTAssertEqual(TaskListModePreference.load(defaults: defaults), .compact)
+
+        CollapsedTaskGroupPreference.save(["t_00000001", "t_00000002"], defaults: defaults)
+        XCTAssertEqual(
+            CollapsedTaskGroupPreference.load(defaults: defaults),
+            ["t_00000001", "t_00000002"]
+        )
+    }
+
+    func testCompactLayoutPreservesRequiredControlsAtMinimumPanelWidth() {
+        XCTAssertEqual(CompactTaskLayout.minimumPanelWidth, 360)
+        XCTAssertGreaterThanOrEqual(CompactTaskLayout.disclosureHitTarget, 44)
+        XCTAssertGreaterThanOrEqual(CompactTaskLayout.percentageReservation, 38)
+        XCTAssertGreaterThanOrEqual(CompactTaskLayout.availableContentWidth, 240)
     }
 
     private func makeTask(
