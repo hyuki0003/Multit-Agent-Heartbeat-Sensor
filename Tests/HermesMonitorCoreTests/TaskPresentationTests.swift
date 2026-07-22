@@ -187,6 +187,68 @@ final class TaskPresentationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(CompactTaskLayout.availableContentWidth, 240)
     }
 
+    // MARK: - ActiveBoardProjection
+
+    func testActiveBoardProjectionExcludesArchivedOnlyAndRetainsDoneAndActiveStatuses() {
+        let archived = makeCorrelated(task: makeTask(id: "archived", status: .archived))
+        let done = makeCorrelated(task: makeTask(id: "done", status: .done))
+        let running = makeCorrelated(task: makeTask(id: "running", status: .running))
+        let blocked = makeCorrelated(task: makeTask(id: "blocked", status: .blocked))
+        let todo = makeCorrelated(task: makeTask(id: "todo", status: .todo))
+        // A failed display status (running task + failed run) must stay visible
+        // so archive failures remain inspectable/retryable.
+        let failedRun = TaskRun(
+            id: 9,
+            taskID: "failed",
+            profile: "rune",
+            status: .failed,
+            startedAt: Date(timeIntervalSince1970: 100),
+            outcome: .gaveUp
+        )
+        let failed = makeCorrelated(task: makeTask(id: "failed", status: .running), currentRun: failedRun)
+
+        let projected = ActiveBoardProjection.activeBoardTasks(
+            from: [archived, done, running, blocked, todo, failed]
+        )
+
+        // Only .archived is excluded; .done and every other active status retained.
+        XCTAssertEqual(
+            Set(projected.map(\.id)),
+            Set(["done", "running", "blocked", "todo", "failed"])
+        )
+        XCTAssertFalse(projected.contains { $0.task.status == .archived })
+        XCTAssertTrue(projected.contains { $0.task.status == .done })
+        XCTAssertTrue(projected.contains { $0.task.status == .running })
+        XCTAssertTrue(projected.contains { $0.visualStatus == .failed })
+    }
+
+    func testActiveBoardProjectionKeepsArchivedParentExcludedChildVisibleAsStandalone() {
+        let archivedParent = makeCorrelated(task: makeTask(id: "parent", status: .archived))
+        let activeChild = makeCorrelated(task: makeTask(id: "child", status: .running))
+        let links = [TaskLink(parentID: archivedParent.id, childID: activeChild.id)]
+
+        // Project first (presentation boundary), then group.
+        let projected = ActiveBoardProjection.activeBoardTasks(
+            from: [archivedParent, activeChild]
+        )
+        let groups = TaskGroupBuilder.groups(tasks: projected, links: links)
+
+        // Archived parent is gone; the link cannot resolve (parent absent from
+        // taskByID) so the active child surfaces as a standalone group root.
+        XCTAssertEqual(groups.map(\.parent.id), ["child"])
+        XCTAssertTrue(groups[0].isStandalone)
+        XCTAssertTrue(groups[0].children.isEmpty)
+    }
+
+    func testActiveBoardProjectionAllArchivedReturnsEmpty() {
+        let archived1 = makeCorrelated(task: makeTask(id: "a1", status: .archived))
+        let archived2 = makeCorrelated(task: makeTask(id: "a2", status: .archived))
+
+        let projected = ActiveBoardProjection.activeBoardTasks(from: [archived1, archived2])
+
+        XCTAssertTrue(projected.isEmpty)
+    }
+
     private func makeTask(
         id: String,
         status: KanbanTaskStatus = .running,

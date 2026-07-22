@@ -20,6 +20,19 @@ swift run HermesMonitorApp
 
 `swift run HermesMonitorApp` launches the UI, but UserNotifications is available only from a bundled `.app`.
 
+### Signed production application
+
+Production builds use the XcodeGen application target and require a usable code-signing identity supplied by the caller. The repository never selects or embeds a certificate label. On the target arm64 Mac, set the identity for the current command and run:
+
+```sh
+HERMES_MONITOR_CODE_SIGN_IDENTITY="<valid code-signing identity>" \
+  Scripts/build-signed-app.sh
+```
+
+The script validates the identity with the macOS code-signing policy, generates the Xcode project outside the source tree, builds a Release application, and verifies its signature, designated requirement, bundle metadata, and arm64 executable. Its staged install product is `.build/production/InstallRoot/Applications/Hermes Monitor.app`; the fixed final deployment target is `/Applications/Hermes Monitor.app`. Installation and launch acceptance are separate release-gate actions.
+
+`swift run HermesMonitorApp` remains a development compatibility path. A bare executable from `.build`, DerivedData, or `/tmp` must not be deployed as the production app: it is not the signed `Hermes Monitor.app` and does not provide the stable bundle identity required by macOS security services.
+
 ## Read-only snapshot and bounded write-through boundary
 
 `RemotePathPolicy` permits reads only from:

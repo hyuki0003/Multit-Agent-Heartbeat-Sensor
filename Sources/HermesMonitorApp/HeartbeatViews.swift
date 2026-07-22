@@ -4,6 +4,49 @@ import SwiftUI
 import HermesMonitorCore
 #endif
 
+struct LiveHeartbeatIndicator: View {
+    let item: CorrelatedTask
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            HeartbeatIndicator(
+                item: item,
+                liveness: item.task.liveness(at: timeline.date)
+            )
+        }
+    }
+}
+
+struct TaskLivenessSummaryView: View {
+    let item: CorrelatedTask
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let liveness = item.task.liveness(at: timeline.date)
+
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(liveness.color)
+                        .frame(width: 6, height: 6)
+                    Text(liveness.displayName)
+                        .foregroundStyle(liveness.color)
+                }
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+
+                if let heartbeat = item.task.lastHeartbeatAt {
+                    HStack(spacing: 4) {
+                        Text("heartbeat")
+                        Text(heartbeat, style: .relative)
+                    }
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+}
+
 struct HeartbeatIndicator: View {
     let item: CorrelatedTask
     let liveness: TaskLivenessState

@@ -17,12 +17,18 @@ targets:
     sources:
       - path: Sources/HermesMonitorApp
       - path: Sources/HermesMonitorCore
+        excludes:
+          - Resources
+      - path: Sources/HermesMonitorCore/Resources/RemoteSQLiteSnapshot.py
+        buildPhase: resources
+      - path: Sources/HermesMonitorCore/Resources/TaskInstructionHelper.py
+        buildPhase: resources
       - path: HermesMonitor-Bridging-Header.h
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hermes.monitor.app
         INFOPLIST_FILE: Info.plist
-        PRODUCT_NAME: HermesMonitor
+        PRODUCT_NAME: "Hermes Monitor"
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "1.0"
         SWIFT_OBJC_BRIDGING_HEADER: HermesMonitor-Bridging-Header.h
@@ -31,10 +37,15 @@ targets:
         OTHER_LDFLAGS: "-lsqlite3"
         SYSTEM_HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include /usr/local/include"
         HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include /usr/local/include"
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGNING_ALLOWED: NO
-        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_IDENTITY: "$(HERMES_MONITOR_CODE_SIGN_IDENTITY)"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGNING_ALLOWED: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        INSTALL_PATH: "/Applications"
+        SKIP_INSTALL: NO
+        ARCHS: "arm64"
+        ONLY_ACTIVE_ARCH: NO
     dependencies:
       - sdk: AVFoundation.framework
       - sdk: Carbon.framework

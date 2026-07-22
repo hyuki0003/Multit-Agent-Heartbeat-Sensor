@@ -11,6 +11,7 @@ struct TaskListView: View {
     let archiveActionsEnabled: Bool
     let archiveInFlightTaskIDs: Set<String>
     let onManualLink: (String, String) -> Void
+    let onShowComments: (CorrelatedTask) -> Void
     let onArchive: (CorrelatedTask) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -19,8 +20,9 @@ struct TaskListView: View {
     @State private var detailedCompactTaskIDs: Set<String> = []
 
     var body: some View {
+        let activeTasks = ActiveBoardProjection.activeBoardTasks(from: snapshot.tasks)
         let groups = TaskGroupBuilder.groups(
-            tasks: snapshot.tasks,
+            tasks: activeTasks,
             links: snapshot.kanban.links
         )
         let collapsibleGroupIDs = Set(groups.filter { !$0.isStandalone }.map(\.id))
@@ -237,6 +239,20 @@ struct TaskListView: View {
                             "liveness \(liveness.compactDisplayName), " + heartbeatAccessibility(item)
                     )
 
+                    Button {
+                        onShowComments(item)
+                    } label: {
+                        Image(systemName: "text.bubble")
+                            .frame(
+                                minWidth: CGFloat(CompactTaskLayout.disclosureHitTarget),
+                                minHeight: CGFloat(CompactTaskLayout.disclosureHitTarget)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Comments")
+                    .accessibilityLabel("Open Comments for \(item.task.title)")
+
                     if canArchive && item.task.status == .done {
                         TaskArchiveControl(
                             item: item,
@@ -266,7 +282,6 @@ struct TaskListView: View {
             runs: snapshot.kanban.runs.filter { $0.taskID == item.id },
             events: snapshot.kanban.events.filter { $0.taskID == item.id },
             comments: snapshot.kanban.comments.filter { $0.taskID == item.id },
-            logLines: snapshot.logTails[item.id] ?? [],
             availableSessions: snapshot.state.sessions.sorted { $0.startedAt > $1.startedAt },
             isSelected: selectedTaskID == item.id,
             onManualLink: onManualLink,
@@ -274,6 +289,7 @@ struct TaskListView: View {
             archiveActionsEnabled: archiveActionsEnabled,
             isArchiving: archiveInFlightTaskIDs.contains(item.id),
             showsWaveform: showsWaveform,
+            onShowComments: { onShowComments(item) },
             onArchive: { onArchive(item) }
         )
     }

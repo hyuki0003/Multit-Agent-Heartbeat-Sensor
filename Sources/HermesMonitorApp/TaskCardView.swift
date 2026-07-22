@@ -8,7 +8,6 @@ struct TaskCardView: View {
     let runs: [TaskRun]
     let events: [TaskEvent]
     let comments: [TaskComment]
-    let logLines: [String]
     let availableSessions: [HermesSession]
     let isSelected: Bool
     let onManualLink: (String, String) -> Void
@@ -16,15 +15,11 @@ struct TaskCardView: View {
     let archiveActionsEnabled: Bool
     let isArchiving: Bool
     let showsWaveform: Bool
+    let onShowComments: () -> Void
     let onArchive: () -> Void
 
-    @State private var showsLog = false
-    @State private var showsDetail = false
-
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            cardContent(liveness: item.task.liveness(at: timeline.date))
-        }
+        cardContent(liveness: item.task.liveness(at: .now))
     }
 
     private func cardContent(liveness: TaskLivenessState) -> some View {
@@ -32,7 +27,7 @@ struct TaskCardView: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(alignment: .top, spacing: 8) {
-                        HeartbeatIndicator(item: item, liveness: liveness)
+                        LiveHeartbeatIndicator(item: item)
                             .frame(width: 24, height: 24)
 
                         Text(item.task.title)
@@ -94,22 +89,9 @@ struct TaskCardView: View {
                         Label("\(item.task.consecutiveFailures) failures", systemImage: "xmark.octagon")
                             .foregroundStyle(item.task.consecutiveFailures > 0 ? Color.red : Color.secondary)
                         Spacer(minLength: 2)
-                        Circle()
-                            .fill(liveness.color)
-                            .frame(width: 6, height: 6)
-                        Text(liveness.displayName)
-                            .foregroundStyle(liveness.color)
+                        TaskLivenessSummaryView(item: item)
                     }
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-
-                    if let heartbeat = item.task.lastHeartbeatAt {
-                        HStack(spacing: 4) {
-                            Text("heartbeat")
-                            Text(heartbeat, style: .relative)
-                        }
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -125,26 +107,13 @@ struct TaskCardView: View {
 
             HStack(spacing: 12) {
                 DisclosureButton(
-                    title: logLines.isEmpty ? "No log" : "Log · \(logLines.count)",
-                    systemImage: "text.alignleft",
-                    isExpanded: showsLog,
-                    isEnabled: !logLines.isEmpty
-                ) {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        showsLog.toggle()
-                    }
-                }
-
-                DisclosureButton(
-                    title: "Details",
-                    systemImage: "info.circle",
-                    isExpanded: showsDetail,
-                    isEnabled: true
-                ) {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        showsDetail.toggle()
-                    }
-                }
+                    title: "Comments",
+                    systemImage: "text.bubble",
+                    isExpanded: false,
+                    isEnabled: true,
+                    action: onShowComments
+                )
+                .help("Open task comments and Clinical Report")
                 Spacer()
                 if canArchive && item.task.status == .done {
                     TaskArchiveControl(
@@ -154,26 +123,6 @@ struct TaskCardView: View {
                         onConfirm: onArchive
                     )
                 }
-            }
-
-            if showsLog, !logLines.isEmpty {
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(logLines.suffix(5).joined(separator: "\n"))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.green.opacity(0.9))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(8)
-                }
-                .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 150, alignment: .leading)
-                .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 6))
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            if showsDetail {
-                Divider().opacity(0.35)
-                TaskDetailView(item: item, runs: runs, events: events, comments: comments)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(12)

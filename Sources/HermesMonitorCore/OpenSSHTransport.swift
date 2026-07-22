@@ -23,10 +23,12 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     case processFailed(executable: String, status: Int32, output: String)
     case processTimedOut(executable: String, timeoutSeconds: Int)
     case archiveProcessTimedOut(timeoutSeconds: Int)
+    case instructionProcessTimedOut(timeoutSeconds: Int)
     case emptyPrivateKey
     case emptyPassword
     case missingAskPassHelper
     case missingSnapshotHelper
+    case missingTaskInstructionHelper
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +40,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "\(executable) exceeded the \(timeoutSeconds)-second database snapshot deadline and was terminated. Check the VPN and SSH gateway, then retry."
         case .archiveProcessTimedOut(let timeoutSeconds):
             return "The remote Hermes archive exceeded \(timeoutSeconds) seconds. Its remote outcome is unknown because the command may have completed before the connection was terminated. Refresh the board before taking another action."
+        case .instructionProcessTimedOut(let timeoutSeconds):
+            return "The Astra instruction submission exceeded \(timeoutSeconds) seconds. Retry is safe because the instruction ID is idempotent."
         case .emptyPrivateKey:
             return "The Keychain SSH private key is empty."
         case .emptyPassword:
@@ -46,29 +50,52 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "The private SSH_ASKPASS helper could not be staged."
         case .missingSnapshotHelper:
             return "The bundled remote SQLite snapshot helper is missing."
+        case .missingTaskInstructionHelper:
+            return "The bundled Astra instruction helper is missing."
         }
     }
 }
 
-public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving, @unchecked Sendable {
+enum RemoteSQLiteSnapshotResource {
+    static var bundle: Bundle {
+#if SWIFT_PACKAGE
+        return Bundle.module
+#else
+        return Bundle.main
+#endif
+    }
+
+    static var url: URL? {
+        bundle.url(forResource: "RemoteSQLiteSnapshot", withExtension: "py")
+    }
+}
+
+public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving, RemoteTaskInstructionSubmitting, @unchecked Sendable {
     private static let snapshotProcessTimeoutSeconds: TimeInterval = 20
     private static let archiveProcessTimeoutSeconds: TimeInterval = 20
+    private static let instructionProcessTimeoutSeconds: TimeInterval = 20
     private static let processTerminationGraceSeconds: TimeInterval = 1
     private static let archiveDiagnosticByteLimit = 8 * 1_024
 
     private let configuration: SSHConnectionConfiguration
     private let credentials: any SSHCredentialProviding
+    private let sshExecutableURL: URL
+    private let sftpExecutableURL: URL
     private let pathPolicy: RemotePathPolicy
     private let fileManager: FileManager
 
     public init(
         configuration: SSHConnectionConfiguration,
         credentials: any SSHCredentialProviding = KeychainSSHCredentialStore(),
+        sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+        sftpExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sftp"),
         pathPolicy: RemotePathPolicy = RemotePathPolicy(),
         fileManager: FileManager = .default
     ) {
         self.configuration = configuration
         self.credentials = credentials
+        self.sshExecutableURL = sshExecutableURL
+        self.sftpExecutableURL = sftpExecutableURL
         self.pathPolicy = pathPolicy
         self.fileManager = fileManager
     }
@@ -98,10 +125,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
 
     public func downloadDatabaseSnapshot(remotePath: String, to localURL: URL) async throws {
         let approvedPath = try pathPolicy.validateDatabasePath(remotePath)
-        guard let helperURL = Bundle.module.url(
-            forResource: "RemoteSQLiteSnapshot",
-            withExtension: "py"
-        ) else {
+        guard let helperURL = RemoteSQLiteSnapshotResource.url else {
             throw OpenSSHTransportError.missingSnapshotHelper
         }
         let helper = try String(contentsOf: helperURL, encoding: .utf8)
@@ -136,6 +160,36 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
                 try runBoundedArchiveSSH(
                     remoteCommand: remoteCommand,
                     cancellation: cancellation
+                )
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    public func submitTaskInstruction(
+        _ request: RemoteTaskInstructionRequest
+    ) async throws -> RemoteTaskInstructionReceipt {
+        guard let helperURL = TaskInstructionHelperResource.url else {
+            throw OpenSSHTransportError.missingTaskInstructionHelper
+        }
+        let helper = try String(contentsOf: helperURL, encoding: .utf8)
+        let payload = try TaskInstructionCodec.encode(request)
+        let remoteCommand = HermesTaskInstructionCommand.remoteCommand(helper: helper)
+        let cancellation = ProcessCancellationController()
+
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) { [self] in
+                try cancellation.checkCancellation()
+                let output = try runBoundedInstructionSSH(
+                    remoteCommand: remoteCommand,
+                    payload: payload,
+                    message: request.message,
+                    cancellation: cancellation
+                )
+                return try TaskInstructionCodec.decodeReceipt(
+                    output,
+                    expectedInstructionID: request.instructionID
                 )
             }.value
         } onCancel: {
@@ -246,9 +300,21 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         return "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
+    private func credentialForSession() throws -> SSHCredential {
+        do {
+            let credential = try credentials.credential(for: configuration.credentialReference)
+            try credential.validate(for: configuration.authenticationMode)
+            return credential
+        } catch SSHCredentialValidationError.emptyPrivateKey {
+            throw OpenSSHTransportError.emptyPrivateKey
+        } catch SSHCredentialValidationError.emptyPassword {
+            throw OpenSSHTransportError.emptyPassword
+        }
+    }
+
     private func runSFTP(batchCommand: String) throws -> String {
         try runOpenSSH(
-            executable: "/usr/bin/sftp",
+            executable: sftpExecutableURL.path,
             standardInput: Data(batchCommand.utf8)
         ) { identityFile in
             OpenSSHArgumentBuilder.sftpArguments(
@@ -259,7 +325,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
     }
 
     private func runSSH(remoteCommand: String) throws -> String {
-        try runOpenSSH(executable: "/usr/bin/ssh", standardInput: nil) { identityFile in
+        try runOpenSSH(executable: sshExecutableURL.path, standardInput: nil) { identityFile in
             OpenSSHArgumentBuilder.sshArguments(
                 configuration: configuration,
                 identityFile: identityFile,
@@ -273,14 +339,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         to localURL: URL,
         cancellation: ProcessCancellationController
     ) throws {
-        let credential = try credentials.credential(for: configuration.credentialReference)
-        do {
-            try credential.validate(for: configuration.authenticationMode)
-        } catch SSHCredentialValidationError.emptyPrivateKey {
-            throw OpenSSHTransportError.emptyPrivateKey
-        } catch SSHCredentialValidationError.emptyPassword {
-            throw OpenSSHTransportError.emptyPassword
-        }
+        let credential = try credentialForSession()
 
         let stager = SSHCredentialStager(fileManager: fileManager)
         let staged = try stager.stage(
@@ -319,7 +378,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.executableURL = sshExecutableURL
         process.arguments = OpenSSHArgumentBuilder.sshArguments(
             configuration: configuration,
             identityFile: staged.identityFile,
@@ -344,6 +403,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         cancellation.didStart(process)
         try Self.waitForSnapshotProcess(
             process,
+            executable: sshExecutableURL.path,
             cancellation: cancellation,
             timeoutSeconds: Self.snapshotProcessTimeoutSeconds
         )
@@ -357,7 +417,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
                 as: UTF8.self
             )
             throw OpenSSHTransportError.processFailed(
-                executable: "/usr/bin/ssh",
+                executable: sshExecutableURL.path,
                 status: process.terminationStatus,
                 output: diagnostics
             )
@@ -369,14 +429,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         remoteCommand: String,
         cancellation: ProcessCancellationController
     ) throws {
-        let credential = try credentials.credential(for: configuration.credentialReference)
-        do {
-            try credential.validate(for: configuration.authenticationMode)
-        } catch SSHCredentialValidationError.emptyPrivateKey {
-            throw OpenSSHTransportError.emptyPrivateKey
-        } catch SSHCredentialValidationError.emptyPassword {
-            throw OpenSSHTransportError.emptyPassword
-        }
+        let credential = try credentialForSession()
 
         let stager = SSHCredentialStager(fileManager: fileManager)
         let staged = try stager.stage(
@@ -386,7 +439,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         defer { stager.remove(staged) }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.executableURL = sshExecutableURL
         process.arguments = OpenSSHArgumentBuilder.sshArguments(
             configuration: configuration,
             identityFile: staged.identityFile,
@@ -442,7 +495,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
 
         guard process.terminationStatus == 0 else {
             throw OpenSSHTransportError.processFailed(
-                executable: "/usr/bin/ssh",
+                executable: sshExecutableURL.path,
                 status: process.terminationStatus,
                 output: Self.archiveDiagnostics(
                     output: output,
@@ -451,6 +504,95 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
                 )
             )
         }
+    }
+
+    private func runBoundedInstructionSSH(
+        remoteCommand: String,
+        payload: Data,
+        message: String,
+        cancellation: ProcessCancellationController
+    ) throws -> Data {
+        let instructionCredential = try credentialForSession()
+
+        let stager = SSHCredentialStager(fileManager: fileManager)
+        let staged = try stager.stage(
+            instructionCredential,
+            authenticationMode: configuration.authenticationMode
+        )
+        defer { stager.remove(staged) }
+
+        let process = Process()
+        process.executableURL = sshExecutableURL
+        process.arguments = OpenSSHArgumentBuilder.sshArguments(
+            configuration: configuration,
+            identityFile: staged.identityFile,
+            remoteCommand: remoteCommand
+        )
+        let askPassSecret = instructionCredential.askPassSecret(for: configuration.authenticationMode)
+        if askPassSecret != nil, staged.askPassFile == nil {
+            throw OpenSSHTransportError.missingAskPassHelper
+        }
+        process.environment = SSHAskPassEnvironment.make(
+            base: ProcessInfo.processInfo.environment,
+            secret: askPassSecret,
+            askPassFile: staged.askPassFile
+        )
+        let retainedByteLimit = Self.archiveDiagnosticByteLimit +
+            (askPassSecret?.utf8.count ?? 0) + message.utf8.count
+        let input = Pipe()
+        let outputCapture = BoundedProcessOutputCapture(byteLimit: retainedByteLimit)
+        let errorCapture = BoundedProcessOutputCapture(byteLimit: retainedByteLimit)
+        process.standardInput = input
+        process.standardOutput = outputCapture.pipe
+        process.standardError = errorCapture.pipe
+
+        try cancellation.register(process)
+        defer { cancellation.clear(process) }
+        outputCapture.start()
+        errorCapture.start()
+        do {
+            try process.run()
+            input.fileHandleForWriting.write(payload)
+            try input.fileHandleForWriting.close()
+        } catch {
+            try? input.fileHandleForWriting.close()
+            outputCapture.closeParentWriteEnd()
+            errorCapture.closeParentWriteEnd()
+            _ = outputCapture.finish()
+            _ = errorCapture.finish()
+            throw error
+        }
+        outputCapture.closeParentWriteEnd()
+        errorCapture.closeParentWriteEnd()
+        cancellation.didStart(process)
+        do {
+            try Self.waitForInstructionProcess(
+                process,
+                timeoutSeconds: Self.instructionProcessTimeoutSeconds,
+                cancellation: cancellation
+            )
+        } catch {
+            _ = outputCapture.finish()
+            _ = errorCapture.finish()
+            throw error
+        }
+        let output = outputCapture.finish()
+        let error = errorCapture.finish()
+        try cancellation.checkCancellation()
+
+        guard process.terminationStatus == 0 else {
+            throw OpenSSHTransportError.processFailed(
+                executable: sshExecutableURL.path,
+                status: process.terminationStatus,
+                output: Self.instructionDiagnostics(
+                    output: output,
+                    error: error,
+                    credentialSecret: askPassSecret,
+                    message: message
+                )
+            )
+        }
+        return output
     }
 
     static func waitForArchiveProcess(
@@ -516,8 +658,50 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         return bounded
     }
 
+    static func instructionDiagnostics(
+        output: Data,
+        error: Data,
+        credentialSecret: String?,
+        message: String
+    ) -> String {
+        let values = [output, error].map { String(decoding: $0, as: UTF8.self) }
+        var combined = values.filter { !$0.isEmpty }.joined(separator: "\n")
+        var didRedact = false
+        for value in [credentialSecret, message].compactMap({ $0 }).filter({ !$0.isEmpty }) {
+            if combined.contains(value) {
+                didRedact = true
+                combined = combined.replacingOccurrences(of: value, with: "<redacted>")
+            }
+        }
+        combined = sanitizedAndBoundedDiagnostics(combined)
+        if didRedact && !combined.contains("<redacted>") {
+            combined = sanitizedAndBoundedDiagnostics("<redacted>\n" + combined)
+        }
+        return combined
+    }
+
+    private static func sanitizedAndBoundedDiagnostics(_ combined: String) -> String {
+        var combined = combined
+        combined = String(combined.unicodeScalars.map { scalar in
+            if scalar == "\n" || scalar == "\t" || scalar.value >= 32 {
+                return Character(String(scalar))
+            }
+            return "�"
+        })
+        guard !combined.isEmpty else { return "No remote diagnostics." }
+        var bounded = String(
+            decoding: combined.utf8.prefix(archiveDiagnosticByteLimit),
+            as: UTF8.self
+        )
+        while bounded.utf8.count > archiveDiagnosticByteLimit {
+            bounded.removeLast()
+        }
+        return bounded
+    }
+
     private static func waitForSnapshotProcess(
         _ process: Process,
+        executable: String,
         cancellation: ProcessCancellationController,
         timeoutSeconds: TimeInterval
     ) throws {
@@ -532,11 +716,36 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
             if ProcessInfo.processInfo.systemUptime >= deadline {
                 terminateAndReap(process)
                 throw OpenSSHTransportError.processTimedOut(
-                    executable: "/usr/bin/ssh",
+                    executable: executable,
                     timeoutSeconds: Int(timeoutSeconds)
                 )
             }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+        process.waitUntilExit()
+        try cancellation.checkCancellation()
+    }
+
+    private static func waitForInstructionProcess(
+        _ process: Process,
+        timeoutSeconds: TimeInterval,
+        cancellation: ProcessCancellationController
+    ) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeoutSeconds
+        while process.isRunning {
+            do {
+                try cancellation.checkCancellation()
+            } catch {
+                terminateAndReap(process)
+                throw error
+            }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                terminateAndReap(process)
+                throw OpenSSHTransportError.instructionProcessTimedOut(
+                    timeoutSeconds: max(1, Int(timeoutSeconds.rounded(.up)))
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.01)
         }
         process.waitUntilExit()
         try cancellation.checkCancellation()
@@ -565,14 +774,7 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
         standardInput: Data?,
         arguments: (URL?) -> [String]
     ) throws -> String {
-        let credential = try credentials.credential(for: configuration.credentialReference)
-        do {
-            try credential.validate(for: configuration.authenticationMode)
-        } catch SSHCredentialValidationError.emptyPrivateKey {
-            throw OpenSSHTransportError.emptyPrivateKey
-        } catch SSHCredentialValidationError.emptyPassword {
-            throw OpenSSHTransportError.emptyPassword
-        }
+        let credential = try credentialForSession()
 
         let stager = SSHCredentialStager(fileManager: fileManager)
         let staged = try stager.stage(

@@ -237,7 +237,9 @@ class RemoteSQLiteSnapshotIntegrationTests(unittest.TestCase):
 
             main_only = root / "main-only.db"
             main_only.write_bytes(source.read_bytes())
-            with sqlite3.connect(f"file:{main_only}?mode=ro", uri=True) as copied:
+            # macOS SQLite refuses a read-only WAL-mode main file without its sidecars.
+            # Immutable mode is intentional only for this stale-copy assertion.
+            with sqlite3.connect(f"file:{main_only}?mode=ro&immutable=1", uri=True) as copied:
                 self.assertEqual(copied.execute("SELECT count(*) FROM markers").fetchone()[0], 0)
 
             environment = os.environ.copy()

@@ -22,26 +22,38 @@ final class MonitorViewModel: ObservableObject {
     @Published private(set) var archiveInFlightTaskIDs: Set<String> = []
     @Published private(set) var archiveFailure: TaskArchiveFailure?
     @Published private(set) var archiveNotice: String?
+    @Published private(set) var instructionInFlightTaskIDs: Set<String> = []
+    @Published private(set) var instructionNoticeByTaskID: [String: String] = [:]
+    @Published private(set) var instructionErrorByTaskID: [String: String] = [:]
 
     private let client: (any HermesMonitorServing)?
     private let archiveWorkflow: RemoteArchiveWorkflow?
+    private let instructionSubmitter: (any RemoteTaskInstructionSubmitting)?
     private let manualLinkStore: ManualSessionLinkStore
+    private let automaticallyArchiveDoneTasks: @MainActor () -> Bool
     private var manualSessionLinks: [String: String]
     private var monitoringTask: Task<Void, Never>?
     private var persistentErrorMessage: String?
+    private var automaticArchiveAttemptedTaskIDs: Set<String> = []
     var onSnapshot: ((HermesMonitorSnapshot) -> Void)?
     var canArchiveTasks: Bool { archiveWorkflow != nil }
+    var canSubmitTaskInstructions: Bool { instructionSubmitter != nil }
 
     init(
         client: (any HermesMonitorServing)?,
+        instructionSubmitter: (any RemoteTaskInstructionSubmitting)? = nil,
         initialError: String? = nil,
         manualLinkStore: ManualSessionLinkStore = ManualSessionLinkStore(
             fileURL: ManualSessionLinkStore.defaultFileURL()
-        )
+        ),
+        automaticallyArchiveDoneTasks: @escaping @MainActor () -> Bool = { false }
     ) {
         self.client = client
         self.archiveWorkflow = client.map { RemoteArchiveWorkflow(service: $0) }
+        self.instructionSubmitter = instructionSubmitter ??
+            (client as? any RemoteTaskInstructionSubmitting)
         self.manualLinkStore = manualLinkStore
+        self.automaticallyArchiveDoneTasks = automaticallyArchiveDoneTasks
         self.errorMessage = initialError
         self.connectionState = client == nil ? .disconnected : .connecting
         self.persistentErrorMessage = nil
@@ -116,11 +128,37 @@ final class MonitorViewModel: ObservableObject {
         do {
             let refreshedSnapshot = try await client.refresh()
             apply(refreshedSnapshot)
+            await archiveDoneTasksAutomaticallyIfNeeded()
             return true
         } catch {
             connectionState = .failed
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func archiveDoneTasksAutomaticallyIfNeeded() async {
+        guard let archiveWorkflow else { return }
+
+        while automaticallyArchiveDoneTasks() {
+            guard let task = snapshot?.tasks.first(where: {
+                $0.task.status == .done &&
+                    !automaticArchiveAttemptedTaskIDs.contains($0.id)
+            }) else {
+                return
+            }
+
+            automaticArchiveAttemptedTaskIDs.insert(task.id)
+            archiveInFlightTaskIDs.insert(task.id)
+
+            do {
+                let refreshedSnapshot = try await archiveWorkflow.archiveAndRefresh(taskID: task.id)
+                archiveInFlightTaskIDs.remove(task.id)
+                apply(refreshedSnapshot)
+            } catch {
+                archiveInFlightTaskIDs.remove(task.id)
+                recordArchiveFailure(error, for: task)
+            }
         }
     }
 
@@ -150,44 +188,68 @@ final class MonitorViewModel: ObservableObject {
             let refreshedSnapshot = try await archiveWorkflow.archiveAndRefresh(taskID: requestedTask.id)
             apply(refreshedSnapshot)
             archiveNotice = "Removed from active board — archived on server."
-        } catch let error as RemoteArchiveWorkflowError {
-            switch error {
-            case .refreshFailedAfterArchive(_):
+        } catch {
+            recordArchiveFailure(error, for: requestedTask)
+        }
+    }
+
+    func submitTaskInstruction(_ request: RemoteTaskInstructionRequest) async -> Bool {
+        guard let instructionSubmitter,
+              !instructionInFlightTaskIDs.contains(request.taskID) else {
+            return false
+        }
+        instructionInFlightTaskIDs.insert(request.taskID)
+        instructionNoticeByTaskID[request.taskID] = nil
+        instructionErrorByTaskID[request.taskID] = nil
+        defer { instructionInFlightTaskIDs.remove(request.taskID) }
+
+        do {
+            let receipt = try await instructionSubmitter.submitTaskInstruction(request)
+            let disposition = receipt.duplicate ? "already accepted" : "accepted"
+            instructionNoticeByTaskID[request.taskID] =
+                "Astra instruction \(disposition) · comment #\(receipt.sourceCommentID) · envelope \(receipt.envelopeTaskID)"
+            _ = await performRefresh()
+            return true
+        } catch {
+            instructionErrorByTaskID[request.taskID] = error.localizedDescription
+            return false
+        }
+    }
+
+    private func recordArchiveFailure(_ error: Error, for requestedTask: CorrelatedTask) {
+        if let workflowError = error as? RemoteArchiveWorkflowError {
+            switch workflowError {
+            case .refreshFailedAfterArchive, .taskNoLongerDone:
                 archiveFailure = TaskArchiveFailure(
                     task: requestedTask,
-                    message: error.localizedDescription,
+                    message: workflowError.localizedDescription,
                     canRetry: false
                 )
-            case .taskNoLongerDone:
-                archiveFailure = TaskArchiveFailure(
-                    task: requestedTask,
-                    message: error.localizedDescription,
-                    canRetry: false
-                )
-            case .alreadyInProgress(_):
+            case .alreadyInProgress:
                 break
             }
-        } catch {
-            if Self.isArchiveOutcomeUnknown(error) {
-                archiveFailure = TaskArchiveFailure(
-                    task: requestedTask,
-                    message: error.localizedDescription,
-                    canRetry: false
-                )
-            } else if isArchiveStatusConflict(error) {
-                archiveFailure = TaskArchiveFailure(
-                    task: requestedTask,
-                    message: "Task is no longer Done; it was not removed. Refresh to review its current status.",
-                    canRetry: false
-                )
-            } else {
-                archiveFailure = TaskArchiveFailure(
-                    task: requestedTask,
-                    message: "Couldn’t remove “\(requestedTask.task.title)”. " +
-                        "No task record was deleted. \(error.localizedDescription)",
-                    canRetry: true
-                )
-            }
+        } else if Self.isArchiveOutcomeUnknown(error) {
+            let diagnostic = error.localizedDescription
+            archiveFailure = TaskArchiveFailure(
+                task: requestedTask,
+                message: diagnostic.localizedCaseInsensitiveContains("outcome is unknown")
+                    ? diagnostic
+                    : "The remote archive outcome is unknown. Refresh the board before deciding whether to remove the task manually.",
+                canRetry: false
+            )
+        } else if isArchiveStatusConflict(error) {
+            archiveFailure = TaskArchiveFailure(
+                task: requestedTask,
+                message: "Task is no longer Done; it was not removed. Refresh to review its current status.",
+                canRetry: false
+            )
+        } else {
+            archiveFailure = TaskArchiveFailure(
+                task: requestedTask,
+                message: "Couldn’t remove “\(requestedTask.task.title)”. " +
+                    "No task record was deleted. \(error.localizedDescription)",
+                canRetry: true
+            )
         }
     }
 

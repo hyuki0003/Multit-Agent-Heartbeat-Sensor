@@ -41,6 +41,21 @@ public enum CollapsedTaskGroupPreference {
     }
 }
 
+public enum AutomaticDoneArchivePreference {
+    public static let automaticallyRemoveDoneTasks = "HermesMonitor.automaticallyRemoveDoneTasks"
+
+    public static func load(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: automaticallyRemoveDoneTasks) != nil else {
+            return false
+        }
+        return defaults.bool(forKey: automaticallyRemoveDoneTasks)
+    }
+
+    public static func save(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: automaticallyRemoveDoneTasks)
+    }
+}
+
 public enum CompactTaskLayout {
     public static let minimumPanelWidth = 360
     public static let horizontalInset = 12

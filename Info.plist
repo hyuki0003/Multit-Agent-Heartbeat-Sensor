@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>HermesMonitor</string>
+    <string>Hermes Monitor</string>
+    <key>CFBundleDisplayName</key>
+    <string>Hermes Monitor</string>
     <key>CFBundleIdentifier</key>
     <string>com.hermes.monitor.app</string>
     <key>CFBundleVersion</key>
@@ -11,7 +13,7 @@
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>
-    <string>HermesMonitor</string>
+    <string>Hermes Monitor</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

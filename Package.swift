@@ -10,7 +10,10 @@ var packageTargets: [Target] = [
     .target(
         name: "HermesMonitorCore",
         dependencies: ["CSQLite"],
-        resources: [.copy("Resources/RemoteSQLiteSnapshot.py")],
+        resources: [
+            .copy("Resources/RemoteSQLiteSnapshot.py"),
+            .copy("Resources/TaskInstructionHelper.py")
+        ],
         linkerSettings: [
             .linkedFramework("Security", .when(platforms: [.macOS]))
         ]

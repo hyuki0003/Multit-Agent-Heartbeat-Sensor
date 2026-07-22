@@ -5,6 +5,221 @@ import HermesMonitorCore
 
 @MainActor
 final class MonitorViewModelTests: XCTestCase {
+    func testAutomaticArchiveDoesNotRunWhenDisabled() async throws {
+        let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
+        let service = ControlledMonitorService(
+            authoritativeStatus: .done,
+            refreshResults: [.success(initial)]
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: service,
+            automaticallyArchiveDoneTasks: { false }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+
+        let archiveCalls = await service.archiveCallCount()
+        let refreshCalls = await service.refreshCallCount()
+        XCTAssertEqual(archiveCalls, 0)
+        XCTAssertEqual(refreshCalls, 1)
+        XCTAssertEqual(viewModel.snapshot?.refreshedAt, initial.refreshedAt)
+    }
+
+    func testAutomaticArchiveRunsForDoneTaskWhenEnabled() async throws {
+        let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
+        let archived = makeSnapshot(status: .archived, refreshedAt: Date(timeIntervalSince1970: 2))
+        let service = ControlledMonitorService(
+            authoritativeStatus: .done,
+            refreshResults: [.success(initial), .success(archived)]
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: service,
+            automaticallyArchiveDoneTasks: { true }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+
+        let archiveCalls = await service.archiveCallCount()
+        let refreshCalls = await service.refreshCallCount()
+        XCTAssertEqual(archiveCalls, 1)
+        XCTAssertEqual(refreshCalls, 2)
+        XCTAssertEqual(viewModel.snapshot?.refreshedAt, archived.refreshedAt)
+    }
+
+    func testAutomaticArchiveProcessesRefreshedDoneTasksSeriallyWithoutDuplicates() async {
+        let firstID = "t_11111111"
+        let secondID = "t_22222222"
+        let initial = makeSnapshot(
+            tasks: [(firstID, .done), (secondID, .done)],
+            refreshedAt: Date(timeIntervalSince1970: 1)
+        )
+        let afterFirstArchive = makeSnapshot(
+            tasks: [(firstID, .archived), (secondID, .done)],
+            refreshedAt: Date(timeIntervalSince1970: 2)
+        )
+        let afterSecondArchive = makeSnapshot(
+            tasks: [(firstID, .archived), (secondID, .archived)],
+            refreshedAt: Date(timeIntervalSince1970: 3)
+        )
+        let service = ControlledMonitorService(
+            authoritativeStatus: .done,
+            refreshResults: [
+                .success(initial),
+                .success(afterFirstArchive),
+                .success(afterSecondArchive),
+            ]
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: service,
+            automaticallyArchiveDoneTasks: { true }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+
+        let operations = await service.operationLog()
+        XCTAssertEqual(
+            operations,
+            [
+                "refresh",
+                "status:\(firstID)",
+                "archive:\(firstID)",
+                "refresh",
+                "status:\(secondID)",
+                "archive:\(secondID)",
+                "refresh",
+            ]
+        )
+        XCTAssertEqual(viewModel.snapshot?.refreshedAt, afterSecondArchive.refreshedAt)
+        XCTAssertTrue(viewModel.archiveInFlightTaskIDs.isEmpty)
+    }
+
+    func testAutomaticArchiveUnknownOutcomesSuppressSessionRetriesAndStayNonRetryable() async {
+        let unknownOutcomes: [(String, Error)] = [
+            (
+                "timeout",
+                OpenSSHTransportError.archiveProcessTimedOut(timeoutSeconds: 20)
+            ),
+            ("cancellation", CancellationError()),
+        ]
+
+        for (name, error) in unknownOutcomes {
+            let initial = makeSnapshot(
+                status: .done,
+                refreshedAt: Date(timeIntervalSince1970: 1)
+            )
+            let service = ControlledMonitorService(
+                authoritativeStatus: .done,
+                archiveError: error,
+                refreshResults: [.success(initial), .success(initial)]
+            )
+            let (viewModel, directory) = makeViewModel(
+                service: service,
+                automaticallyArchiveDoneTasks: { true }
+            )
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            await viewModel.refresh()
+            await viewModel.refresh()
+
+            let archiveCalls = await service.archiveCallCount()
+            XCTAssertEqual(archiveCalls, 1, name)
+            XCTAssertEqual(viewModel.archiveFailure?.canRetry, false, name)
+            XCTAssertTrue(
+                viewModel.archiveFailure?.message.localizedCaseInsensitiveContains(
+                    "outcome is unknown"
+                ) == true,
+                name
+            )
+            XCTAssertTrue(viewModel.canArchiveTasks, name)
+            XCTAssertFalse(viewModel.isRefreshing, name)
+        }
+    }
+
+    func testAutomaticArchiveOrdinaryFailureSuppressesAutoRetryButAllowsManualRetry() async {
+        let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
+        let service = ControlledMonitorService(
+            authoritativeStatus: .done,
+            archiveError: ViewModelTestFailure.archiveFailed,
+            refreshResults: [.success(initial), .success(initial)]
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: service,
+            automaticallyArchiveDoneTasks: { true }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+        await viewModel.refresh()
+
+        let automaticArchiveCalls = await service.archiveCallCount()
+        XCTAssertEqual(automaticArchiveCalls, 1)
+        XCTAssertEqual(viewModel.archiveFailure?.canRetry, true)
+        XCTAssertTrue(viewModel.archiveFailure?.message.contains("No task record was deleted") == true)
+
+        await viewModel.retryArchive()
+
+        let archiveCallsAfterManualRetry = await service.archiveCallCount()
+        XCTAssertEqual(archiveCallsAfterManualRetry, 2)
+        XCTAssertEqual(viewModel.archiveFailure?.canRetry, true)
+    }
+
+    func testAutomaticArchiveNeverSubmitsNonDoneTasks() async {
+        for status in KanbanTaskStatus.allCases where status != .done {
+            let snapshot = makeSnapshot(
+                status: status,
+                refreshedAt: Date(timeIntervalSince1970: 1)
+            )
+            let service = ControlledMonitorService(
+                authoritativeStatus: status,
+                refreshResults: [.success(snapshot)]
+            )
+            let (viewModel, directory) = makeViewModel(
+                service: service,
+                automaticallyArchiveDoneTasks: { true }
+            )
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            await viewModel.refresh()
+
+            let archiveCalls = await service.archiveCallCount()
+            let operations = await service.operationLog()
+            XCTAssertEqual(archiveCalls, 0, status.rawValue)
+            XCTAssertEqual(operations, ["refresh"], status.rawValue)
+        }
+    }
+
+    func testAutomaticArchiveReportsAuthoritativeStatusChangeOnceWithoutMutation() async {
+        let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
+        let service = ControlledMonitorService(
+            authoritativeStatus: .running,
+            refreshResults: [.success(initial), .success(initial)]
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: service,
+            automaticallyArchiveDoneTasks: { true }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+        await viewModel.refresh()
+
+        let archiveCalls = await service.archiveCallCount()
+        let operations = await service.operationLog()
+        XCTAssertEqual(archiveCalls, 0)
+        XCTAssertEqual(
+            operations,
+            ["refresh", "status:t_b672f7a7", "refresh"]
+        )
+        XCTAssertEqual(
+            viewModel.archiveFailure?.message,
+            "Task is no longer Done; it was not removed. Refresh to review its current status."
+        )
+        XCTAssertEqual(viewModel.archiveFailure?.canRetry, false)
+    }
+
     func testArchiveSerializesManualRefreshAndPublishesOnlyPostArchiveSnapshot() async throws {
         let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
         let archived = makeSnapshot(status: .archived, refreshedAt: Date(timeIntervalSince1970: 2))
@@ -91,8 +306,57 @@ final class MonitorViewModelTests: XCTestCase {
         )
     }
 
+    func testAcceptedInstructionRefreshesTimelineAndPublishesReceiptNotice() async throws {
+        let initial = makeSnapshot(status: .blocked, refreshedAt: Date(timeIntervalSince1970: 1))
+        let refreshed = makeSnapshot(status: .blocked, refreshedAt: Date(timeIntervalSince1970: 2))
+        let service = ControlledMonitorService(
+            authoritativeStatus: .blocked,
+            refreshResults: [.success(initial), .success(refreshed)]
+        )
+        let submitter = ControlledInstructionSubmitter(
+            receipt: RemoteTaskInstructionReceipt(
+                accepted: true,
+                duplicate: false,
+                instructionID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                sourceCommentID: 41,
+                envelopeTaskID: "t_abcdef12"
+            )
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MonitorViewModelTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let viewModel = MonitorViewModel(
+            client: service,
+            instructionSubmitter: submitter,
+            manualLinkStore: ManualSessionLinkStore(
+                fileURL: directory.appendingPathComponent("manual-links.json")
+            )
+        )
+        await viewModel.refresh()
+        let request = try RemoteTaskInstructionRequest(
+            taskID: "t_b672f7a7",
+            message: "선택지 B로 진행해 주세요.",
+            instructionID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            selectedOptionID: "B"
+        )
+
+        let accepted = await viewModel.submitTaskInstruction(request)
+
+        XCTAssertTrue(accepted)
+        let submittedRequests = await submitter.submittedRequests()
+        XCTAssertEqual(submittedRequests, [request])
+        XCTAssertEqual(viewModel.snapshot?.refreshedAt, refreshed.refreshedAt)
+        XCTAssertEqual(
+            viewModel.instructionNoticeByTaskID[request.taskID],
+            "Astra instruction accepted · comment #41 · envelope t_abcdef12"
+        )
+        XCTAssertNil(viewModel.instructionErrorByTaskID[request.taskID])
+        XCTAssertFalse(viewModel.instructionInFlightTaskIDs.contains(request.taskID))
+    }
+
     private func makeViewModel(
-        service: ControlledMonitorService
+        service: ControlledMonitorService,
+        automaticallyArchiveDoneTasks: @escaping @MainActor () -> Bool = { false }
     ) -> (MonitorViewModel, URL) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MonitorViewModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -100,7 +364,11 @@ final class MonitorViewModelTests: XCTestCase {
             fileURL: directory.appendingPathComponent("manual-links.json")
         )
         return (
-            MonitorViewModel(client: service, manualLinkStore: store),
+            MonitorViewModel(
+                client: service,
+                manualLinkStore: store,
+                automaticallyArchiveDoneTasks: automaticallyArchiveDoneTasks
+            ),
             directory
         )
     }
@@ -109,15 +377,27 @@ final class MonitorViewModelTests: XCTestCase {
         status: KanbanTaskStatus,
         refreshedAt: Date
     ) -> HermesMonitorSnapshot {
-        let task = KanbanTask(
-            id: "t_b672f7a7",
-            title: "Archive fixture",
-            status: status,
-            createdAt: Date(timeIntervalSince1970: 0),
-            completedAt: status == .done || status == .archived ? refreshedAt : nil
+        makeSnapshot(
+            tasks: [("t_b672f7a7", status)],
+            refreshedAt: refreshedAt
         )
+    }
+
+    private func makeSnapshot(
+        tasks taskStatuses: [(String, KanbanTaskStatus)],
+        refreshedAt: Date
+    ) -> HermesMonitorSnapshot {
+        let tasks = taskStatuses.map { taskID, status in
+            KanbanTask(
+                id: taskID,
+                title: "Archive fixture \(taskID)",
+                status: status,
+                createdAt: Date(timeIntervalSince1970: 0),
+                completedAt: status == .done || status == .archived ? refreshedAt : nil
+            )
+        }
         let kanban = KanbanSnapshot(
-            tasks: [task],
+            tasks: tasks,
             runs: [],
             events: [],
             comments: [],
@@ -126,7 +406,7 @@ final class MonitorViewModelTests: XCTestCase {
         return HermesMonitorSnapshot(
             kanban: kanban,
             state: StateSnapshot(sessions: []),
-            tasks: TaskCorrelator().correlate(tasks: [task], runs: [], sessions: []),
+            tasks: TaskCorrelator().correlate(tasks: tasks, runs: [], sessions: []),
             logTails: [:],
             warnings: [],
             refreshedAt: refreshedAt
@@ -134,8 +414,29 @@ final class MonitorViewModelTests: XCTestCase {
     }
 }
 
+private actor ControlledInstructionSubmitter: RemoteTaskInstructionSubmitting {
+    private let receipt: RemoteTaskInstructionReceipt
+    private var requests: [RemoteTaskInstructionRequest] = []
+
+    init(receipt: RemoteTaskInstructionReceipt) {
+        self.receipt = receipt
+    }
+
+    func submitTaskInstruction(
+        _ request: RemoteTaskInstructionRequest
+    ) async throws -> RemoteTaskInstructionReceipt {
+        requests.append(request)
+        return receipt
+    }
+
+    func submittedRequests() -> [RemoteTaskInstructionRequest] {
+        requests
+    }
+}
+
 private enum ViewModelTestFailure: Error {
     case missingRefreshResult
+    case archiveFailed
 }
 
 private actor ControlledMonitorService: HermesMonitorServing {
@@ -147,6 +448,7 @@ private actor ControlledMonitorService: HermesMonitorServing {
     private var archiveContinuation: CheckedContinuation<Void, Never>?
     private var refreshCalls = 0
     private var archiveCalls = 0
+    private var operations: [String] = []
 
     init(
         authoritativeStatus: KanbanTaskStatus?,
@@ -161,11 +463,13 @@ private actor ControlledMonitorService: HermesMonitorServing {
     }
 
     func authoritativeTaskStatus(taskID: String) async throws -> KanbanTaskStatus? {
-        authoritativeStatus
+        operations.append("status:\(taskID)")
+        return authoritativeStatus
     }
 
     func archiveDoneTask(taskID: String) async throws {
         archiveCalls += 1
+        operations.append("archive:\(taskID)")
         archiveStarted = true
         if suspendsArchive {
             await withCheckedContinuation { continuation in
@@ -177,6 +481,7 @@ private actor ControlledMonitorService: HermesMonitorServing {
 
     func refresh() async throws -> HermesMonitorSnapshot {
         refreshCalls += 1
+        operations.append("refresh")
         guard !refreshResults.isEmpty else { throw ViewModelTestFailure.missingRefreshResult }
         return try refreshResults.removeFirst().get()
     }
@@ -192,4 +497,5 @@ private actor ControlledMonitorService: HermesMonitorServing {
 
     func refreshCallCount() -> Int { refreshCalls }
     func archiveCallCount() -> Int { archiveCalls }
+    func operationLog() -> [String] { operations }
 }

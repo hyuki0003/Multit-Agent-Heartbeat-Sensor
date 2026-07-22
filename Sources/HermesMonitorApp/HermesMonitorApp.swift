@@ -24,6 +24,7 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
     private var menuBarController: MenuBarController?
     private var notificationController: TaskNotificationController?
     private var settingsWindowController: NSWindowController?
+    private var commentsWindowCoordinator: TaskCommentsWindowCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("[HermesMonitor] applicationDidFinishLaunching START")
@@ -31,12 +32,18 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
         let model: MonitorViewModel
         do {
             let client = try MonitorConnectionSettings.load().makeClient()
-            model = MonitorViewModel(client: client)
+            model = MonitorViewModel(
+                client: client,
+                automaticallyArchiveDoneTasks: {
+                    AutomaticDoneArchivePreference.load()
+                }
+            )
         } catch {
             model = MonitorViewModel(client: nil, initialError: error.localizedDescription)
         }
 
         viewModel = model
+        commentsWindowCoordinator = TaskCommentsWindowCoordinator(viewModel: model)
         panelController = FloatingPanelController(rootView: MonitorRootView(viewModel: model))
         menuBarController = MenuBarController(viewModel: model) { [weak self] in
             self?.panelController?.toggle()
@@ -69,6 +76,12 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
             self,
             selector: #selector(handleShowSettings(_:)),
             name: .showHermesMonitorSettings,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowTaskComments(_:)),
+            name: .showHermesTaskComments,
             object: nil
         )
         let hotKey = GlobalHotKeyController {
@@ -113,6 +126,11 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
 
     @objc private func handleShowSettings(_ notification: Notification) {
         showSettings()
+    }
+
+    @objc private func handleShowTaskComments(_ notification: Notification) {
+        guard let taskID = notification.object as? String else { return }
+        commentsWindowCoordinator?.show(taskID: taskID)
     }
 
     // MARK: - Settings Window

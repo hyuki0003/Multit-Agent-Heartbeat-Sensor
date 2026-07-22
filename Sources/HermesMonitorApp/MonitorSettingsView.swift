@@ -21,6 +21,8 @@ struct MonitorSettingsView: View {
     @AppStorage(MonitorPreferenceKeys.notifyOnFailed) private var notifyOnFailed = true
     @AppStorage(MonitorPreferenceKeys.notifyOnHeartbeatStale) private var notifyOnHeartbeatStale = true
     @AppStorage(MonitorPreferenceKeys.notifyOnNewTask) private var notifyOnNewTask = false
+    @AppStorage(AutomaticDoneArchivePreference.automaticallyRemoveDoneTasks)
+    private var automaticallyRemoveDoneTasks = false
     @AppStorage(MonitorPreferenceKeys.hotKey) private var hotKey = "H"
     @AppStorage(MonitorPreferenceKeys.hotKeyUsesCommand) private var hotKeyUsesCommand = true
     @AppStorage(MonitorPreferenceKeys.hotKeyUsesShift) private var hotKeyUsesShift = true
@@ -208,6 +210,13 @@ struct MonitorSettingsView: View {
                         .monospacedDigit()
                         .frame(width: 36, alignment: .trailing)
                 }
+            }
+
+            Section("Task completion") {
+                Toggle("Automatically remove Done tasks", isOn: $automaticallyRemoveDoneTasks)
+                Text("Disabled by default. When enabled, each Done task is archived on the remote Hermes board after an authoritative refresh. This removes it from the active board but does not hard-delete it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Notifications") {

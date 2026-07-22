@@ -202,6 +202,21 @@ public enum TaskGroupLivenessState: String, Equatable, Sendable {
     }
 }
 
+public enum ActiveBoardProjection {
+    /// Returns the active-board task rows, excluding only `.archived`.
+    ///
+    /// Archived rows remain present in `KanbanStore.loadTasks()` and in every
+    /// snapshot so `HermesMonitorClient.authoritativeTaskStatus` can verify
+    /// write-through. This projection is applied only at the `TaskListView`
+    /// presentation boundary, immediately before `TaskGroupBuilder.groups`,
+    /// so server-archived tasks disappear from the active monitoring board
+    /// while `.done` and every other status stay visible (failures stay
+    /// inspectable/retryable).
+    public static func activeBoardTasks(from tasks: [CorrelatedTask]) -> [CorrelatedTask] {
+        tasks.filter { $0.task.status != .archived }
+    }
+}
+
 public enum TaskGroupBuilder {
     public static func groups(
         tasks: [CorrelatedTask],

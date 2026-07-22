@@ -671,6 +671,14 @@ final class SSHConfigurationTests: XCTestCase {
         )
     }
 
+    func testSwiftPackageSnapshotResourceResolverFindsReadableHelper() throws {
+        let helperURL = try XCTUnwrap(RemoteSQLiteSnapshotResource.url)
+
+        XCTAssertEqual(helperURL.lastPathComponent, "RemoteSQLiteSnapshot.py")
+        let helper = try String(contentsOf: helperURL, encoding: .utf8)
+        XCTAssertTrue(helper.contains("sqlite3"))
+    }
+
     func testDatabaseSnapshotCommandAcceptsOnlyExactAllowlistedPaths() throws {
         let helper = "print('snapshot')"
         let command = try OpenSSHTransport.databaseSnapshotCommand(

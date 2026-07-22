@@ -50,7 +50,8 @@ struct MonitorRootView: View {
                     .padding(.top, 8)
                 }
 
-                if snapshot.tasks.isEmpty {
+                let activeTasks = ActiveBoardProjection.activeBoardTasks(from: snapshot.tasks)
+                if activeTasks.isEmpty {
                     emptyState
                 } else {
                     ScrollViewReader { proxy in
@@ -63,6 +64,12 @@ struct MonitorRootView: View {
                                 archiveActionsEnabled: !viewModel.isRefreshing,
                                 archiveInFlightTaskIDs: viewModel.archiveInFlightTaskIDs,
                                 onManualLink: viewModel.link(taskID:to:),
+                                onShowComments: { task in
+                                    NotificationCenter.default.post(
+                                        name: .showHermesTaskComments,
+                                        object: task.id
+                                    )
+                                },
                                 onArchive: { task in
                                     Task { await viewModel.archiveDoneTask(task) }
                                 }
@@ -234,8 +241,9 @@ struct MonitorRootView: View {
     }
 
     private func summary(_ snapshot: HermesMonitorSnapshot) -> String {
-        let running = snapshot.tasks.filter { $0.visualStatus == .running }.count
-        return "\(running) running · \(snapshot.tasks.count) tasks · updated " +
+        let activeTasks = ActiveBoardProjection.activeBoardTasks(from: snapshot.tasks)
+        let running = activeTasks.filter { $0.visualStatus == .running }.count
+        return "\(running) running · \(activeTasks.count) tasks · updated " +
             snapshot.refreshedAt.formatted(.relative(presentation: .numeric))
     }
 
