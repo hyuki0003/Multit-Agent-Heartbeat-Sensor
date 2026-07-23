@@ -23,6 +23,8 @@ targets:
         buildPhase: resources
       - path: Sources/HermesMonitorCore/Resources/TaskInstructionHelper.py
         buildPhase: resources
+      - path: Sources/HermesMonitorCore/Resources/TaskFamilyArchiveHelper.py
+        buildPhase: resources
       - path: HermesMonitor-Bridging-Header.h
     settings:
       base:

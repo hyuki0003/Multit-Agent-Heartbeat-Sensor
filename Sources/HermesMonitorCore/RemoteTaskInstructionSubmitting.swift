@@ -7,6 +7,7 @@ public enum TaskInstructionValidationError: Error, Equatable, LocalizedError {
     case messageTooLarge(maximumBytes: Int)
     case invalidRunID(Int64)
     case invalidSelectedOptionID(String)
+    case unavailableTaskBinding(String)
 
     public var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ public enum TaskInstructionValidationError: Error, Equatable, LocalizedError {
             return "Invalid Hermes run ID: \(runID)"
         case .invalidSelectedOptionID(let optionID):
             return "Invalid Clinical Report option ID: \(optionID)"
+        case .unavailableTaskBinding(let taskID):
+            return "Task \(taskID) does not have an authoritative instruction binding."
         }
     }
 }
@@ -72,6 +75,30 @@ public struct RemoteTaskInstructionRequest: Encodable, Equatable, Sendable {
         self.clientSource = "hermes-monitor"
     }
 
+    public init(
+        task: CorrelatedTask,
+        message: String,
+        instructionID: UUID = UUID(),
+        selectedOptionID: String? = nil
+    ) throws {
+        let runID: Int64?
+        switch task.instructionBinding {
+        case .unbound:
+            runID = nil
+        case .run(let authoritativeRunID):
+            runID = authoritativeRunID
+        case .unavailable:
+            throw TaskInstructionValidationError.unavailableTaskBinding(task.id)
+        }
+        try self.init(
+            taskID: task.id,
+            message: message,
+            instructionID: instructionID,
+            runID: runID,
+            selectedOptionID: selectedOptionID
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case instructionID = "instruction_id"
         case taskID = "task_id"
@@ -79,6 +106,24 @@ public struct RemoteTaskInstructionRequest: Encodable, Equatable, Sendable {
         case runID = "run_id"
         case selectedOptionID = "selected_option_id"
         case clientSource = "client_source"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(instructionID, forKey: .instructionID)
+        try container.encode(taskID, forKey: .taskID)
+        try container.encode(message, forKey: .message)
+        if let runID {
+            try container.encode(runID, forKey: .runID)
+        } else {
+            try container.encodeNil(forKey: .runID)
+        }
+        if let selectedOptionID {
+            try container.encode(selectedOptionID, forKey: .selectedOptionID)
+        } else {
+            try container.encodeNil(forKey: .selectedOptionID)
+        }
+        try container.encode(clientSource, forKey: .clientSource)
     }
 }
 

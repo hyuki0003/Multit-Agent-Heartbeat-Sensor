@@ -24,11 +24,12 @@ public struct MonitorRefreshBackoff: Equatable, Sendable {
     }
 }
 
-public actor HermesMonitorClient: HermesMonitorServing, RemoteTaskInstructionSubmitting {
+public actor HermesMonitorClient: HermesMonitorServing, RemoteSnapshotRefreshing, RemoteTaskInstructionSubmitting, RemoteTaskFamilyArchiving {
     private let synchronizer: RemoteSnapshotSynchronizer
     private let loader: HermesSnapshotLoader
     private let archiver: any RemoteKanbanArchiving
     private let instructionSubmitter: any RemoteTaskInstructionSubmitting
+    private let familyArchiver: any RemoteTaskFamilyArchiving
     private var knownWorkerLogTaskIDs: [String] = []
 
     public init(
@@ -48,6 +49,7 @@ public actor HermesMonitorClient: HermesMonitorServing, RemoteTaskInstructionSub
         self.loader = HermesSnapshotLoader(correlator: correlator)
         self.archiver = transport
         self.instructionSubmitter = transport
+        self.familyArchiver = transport
     }
 
     public func refresh() async throws -> HermesMonitorSnapshot {
@@ -71,6 +73,12 @@ public actor HermesMonitorClient: HermesMonitorServing, RemoteTaskInstructionSub
         _ request: RemoteTaskInstructionRequest
     ) async throws -> RemoteTaskInstructionReceipt {
         try await instructionSubmitter.submitTaskInstruction(request)
+    }
+
+    public func archiveCompletedTaskFamilies(
+        _ request: RemoteTaskFamilyArchiveRequest
+    ) async throws -> RemoteTaskFamilyArchiveReceipt {
+        try await familyArchiver.archiveCompletedTaskFamilies(request)
     }
 
     public func authoritativeTaskStatus(taskID: String) async throws -> KanbanTaskStatus? {

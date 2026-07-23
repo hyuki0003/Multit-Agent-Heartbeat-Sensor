@@ -34,6 +34,10 @@ final class HermesMonitorAppDelegate: NSObject, NSApplicationDelegate, NSWindowD
             let client = try MonitorConnectionSettings.load().makeClient()
             model = MonitorViewModel(
                 client: client,
+                familyArchiveWorkflow: RemoteTaskFamilyArchiveWorkflow(
+                    archiver: client,
+                    refresher: client
+                ),
                 automaticallyArchiveDoneTasks: {
                     AutomaticDoneArchivePreference.load()
                 }

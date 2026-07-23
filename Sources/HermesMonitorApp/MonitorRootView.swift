@@ -29,7 +29,15 @@ struct MonitorRootView: View {
                 .padding(.top, 10)
             }
 
-            if let failure = viewModel.archiveFailure {
+            if let diagnostic = viewModel.familyArchiveDiagnostic {
+                messageBanner(
+                    text: diagnostic,
+                    color: .orange,
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            } else if let failure = viewModel.archiveFailure {
                 archiveFailureBanner(failure)
                     .padding(.horizontal, 12)
                     .padding(.top, 8)

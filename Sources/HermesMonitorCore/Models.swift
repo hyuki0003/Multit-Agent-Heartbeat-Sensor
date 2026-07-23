@@ -31,6 +31,12 @@ public enum TaskRunOutcome: String, Codable, CaseIterable, Sendable {
     case reclaimed
 }
 
+public enum TaskInstructionBinding: Equatable, Sendable {
+    case unbound
+    case run(Int64)
+    case unavailable
+}
+
 public struct KanbanTask: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let title: String

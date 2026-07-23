@@ -124,6 +124,18 @@ final class TaskCommentsComposerState: ObservableObject {
         report.userAction ?? "A/B/C 선택 또는 Astra에게 전달할 지시를 입력하세요."
     }
 
+    func makeRequest(
+        for task: CorrelatedTask,
+        instructionID: UUID = UUID()
+    ) throws -> RemoteTaskInstructionRequest {
+        try RemoteTaskInstructionRequest(
+            task: task,
+            message: draft,
+            instructionID: instructionID,
+            selectedOptionID: selectedOptionID
+        )
+    }
+
     func clearSelectedOption() {
         selectedOptionID = nil
     }
@@ -480,6 +492,7 @@ private struct TaskCommentsView: View {
         let isSending = isSubmitting || composer.deliveryState == .sending
         let isSubmissionDisabled = isSending ||
             !viewModel.canSubmitTaskInstructions ||
+            task.instructionBinding == .unavailable ||
             normalized.isEmpty ||
             byteCount > RemoteTaskInstructionRequest.maximumMessageBytes
         return VStack(alignment: .leading, spacing: 8) {
@@ -588,17 +601,14 @@ private struct TaskCommentsView: View {
         let normalized = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let request: RemoteTaskInstructionRequest
+            let candidateRequest = try composer.makeRequest(for: task)
             if let pendingRequest,
                pendingRequest.message == normalized,
-               pendingRequest.selectedOptionID == composer.selectedOptionID {
+               pendingRequest.selectedOptionID == composer.selectedOptionID,
+               pendingRequest.runID == candidateRequest.runID {
                 request = pendingRequest
             } else {
-                request = try RemoteTaskInstructionRequest(
-                    taskID: taskID,
-                    message: normalized,
-                    runID: task.currentRun?.id,
-                    selectedOptionID: composer.selectedOptionID
-                )
+                request = candidateRequest
             }
             self.pendingRequest = request
             localError = nil

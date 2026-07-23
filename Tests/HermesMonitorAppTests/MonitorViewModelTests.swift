@@ -26,6 +26,34 @@ final class MonitorViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.snapshot?.refreshedAt, initial.refreshedAt)
     }
 
+    func testAutomaticFamilyMaintenanceUsesOneRequestAndOnePostMaintenanceRefresh() async throws {
+        let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
+        let archived = makeSnapshot(status: .archived, refreshedAt: Date(timeIntervalSince1970: 2))
+        let initialService = ControlledMonitorService(
+            authoritativeStatus: .done,
+            refreshResults: [.success(initial)]
+        )
+        let familyService = ControlledFamilyMaintenanceService(snapshot: archived)
+        let workflow = RemoteTaskFamilyArchiveWorkflow(
+            archiver: familyService,
+            refresher: familyService
+        )
+        let (viewModel, directory) = makeViewModel(
+            service: initialService,
+            familyArchiveWorkflow: workflow,
+            automaticallyArchiveDoneTasks: { true }
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await viewModel.refresh()
+
+        let initialRefreshCalls = await initialService.refreshCallCount()
+        let maintenanceOperations = await familyService.operationLog()
+        XCTAssertEqual(initialRefreshCalls, 1)
+        XCTAssertEqual(maintenanceOperations, ["archive", "refresh"])
+        XCTAssertEqual(viewModel.snapshot?.refreshedAt, archived.refreshedAt)
+    }
+
     func testAutomaticArchiveRunsForDoneTaskWhenEnabled() async throws {
         let initial = makeSnapshot(status: .done, refreshedAt: Date(timeIntervalSince1970: 1))
         let archived = makeSnapshot(status: .archived, refreshedAt: Date(timeIntervalSince1970: 2))
@@ -356,6 +384,7 @@ final class MonitorViewModelTests: XCTestCase {
 
     private func makeViewModel(
         service: ControlledMonitorService,
+        familyArchiveWorkflow: RemoteTaskFamilyArchiveWorkflow? = nil,
         automaticallyArchiveDoneTasks: @escaping @MainActor () -> Bool = { false }
     ) -> (MonitorViewModel, URL) {
         let directory = FileManager.default.temporaryDirectory
@@ -366,6 +395,7 @@ final class MonitorViewModelTests: XCTestCase {
         return (
             MonitorViewModel(
                 client: service,
+                familyArchiveWorkflow: familyArchiveWorkflow,
                 manualLinkStore: store,
                 automaticallyArchiveDoneTasks: automaticallyArchiveDoneTasks
             ),
@@ -432,6 +462,37 @@ private actor ControlledInstructionSubmitter: RemoteTaskInstructionSubmitting {
     func submittedRequests() -> [RemoteTaskInstructionRequest] {
         requests
     }
+}
+
+private actor ControlledFamilyMaintenanceService: RemoteTaskFamilyArchiving, RemoteSnapshotRefreshing {
+    private let snapshot: HermesMonitorSnapshot
+    private var operations: [String] = []
+
+    init(snapshot: HermesMonitorSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func archiveCompletedTaskFamilies(
+        _ request: RemoteTaskFamilyArchiveRequest
+    ) async throws -> RemoteTaskFamilyArchiveReceipt {
+        operations.append("archive")
+        return RemoteTaskFamilyArchiveReceipt(
+            outcome: .archived,
+            archivedFamilyCount: 1,
+            archivedTaskCount: 1,
+            archivedTaskIDs: ["t_b672f7a7"],
+            deferredFamilyCount: 0,
+            bounded: false,
+            reason: nil
+        )
+    }
+
+    func refresh() async throws -> HermesMonitorSnapshot {
+        operations.append("refresh")
+        return snapshot
+    }
+
+    func operationLog() -> [String] { operations }
 }
 
 private enum ViewModelTestFailure: Error {

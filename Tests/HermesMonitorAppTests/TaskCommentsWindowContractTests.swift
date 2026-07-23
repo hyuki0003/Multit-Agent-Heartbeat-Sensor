@@ -85,6 +85,43 @@ final class TaskCommentsWindowContractTests: XCTestCase {
         XCTAssertEqual(state.deliveryState, .sending)
     }
 
+    func testComposerBuildsRequestFromInstructionBindingInsteadOfDisplayRun() throws {
+        let historicalRun = TaskRun(
+            id: 44,
+            taskID: "t_12345678",
+            profile: "rune-implementer",
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 1),
+            endedAt: Date(timeIntervalSince1970: 2),
+            outcome: .completed
+        )
+        let correlated = CorrelatedTask(
+            task: KanbanTask(
+                id: "t_12345678",
+                title: "Pending",
+                status: .ready,
+                createdAt: Date(timeIntervalSince1970: 1)
+            ),
+            currentRun: historicalRun,
+            runConfidence: .inferred,
+            session: nil,
+            sessionConfidence: .notApplicable,
+            parentSession: nil,
+            evidence: [],
+            workerLogRemotePath: "/tmp/t_12345678.log",
+            instructionBinding: .unbound
+        )
+        let state = TaskCommentsComposerState()
+        state.draft = "대기 중인 작업을 진행해 주세요."
+
+        let request = try state.makeRequest(
+            for: correlated,
+            instructionID: UUID(uuidString: "31111111-2222-4333-8444-555555555555")!
+        )
+
+        XCTAssertNil(request.runID)
+    }
+
     func testHumanOnlyReportUsesExactActionAsComposerPlaceholder() {
         let report = TaskCommentsReport(
             details: KoreanTaskDetailPresentation(

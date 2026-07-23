@@ -22,12 +22,14 @@ final class MonitorViewModel: ObservableObject {
     @Published private(set) var archiveInFlightTaskIDs: Set<String> = []
     @Published private(set) var archiveFailure: TaskArchiveFailure?
     @Published private(set) var archiveNotice: String?
+    @Published private(set) var familyArchiveDiagnostic: String?
     @Published private(set) var instructionInFlightTaskIDs: Set<String> = []
     @Published private(set) var instructionNoticeByTaskID: [String: String] = [:]
     @Published private(set) var instructionErrorByTaskID: [String: String] = [:]
 
     private let client: (any HermesMonitorServing)?
     private let archiveWorkflow: RemoteArchiveWorkflow?
+    private let familyArchiveWorkflow: RemoteTaskFamilyArchiveWorkflow?
     private let instructionSubmitter: (any RemoteTaskInstructionSubmitting)?
     private let manualLinkStore: ManualSessionLinkStore
     private let automaticallyArchiveDoneTasks: @MainActor () -> Bool
@@ -41,6 +43,7 @@ final class MonitorViewModel: ObservableObject {
 
     init(
         client: (any HermesMonitorServing)?,
+        familyArchiveWorkflow: RemoteTaskFamilyArchiveWorkflow? = nil,
         instructionSubmitter: (any RemoteTaskInstructionSubmitting)? = nil,
         initialError: String? = nil,
         manualLinkStore: ManualSessionLinkStore = ManualSessionLinkStore(
@@ -50,6 +53,7 @@ final class MonitorViewModel: ObservableObject {
     ) {
         self.client = client
         self.archiveWorkflow = client.map { RemoteArchiveWorkflow(service: $0) }
+        self.familyArchiveWorkflow = familyArchiveWorkflow
         self.instructionSubmitter = instructionSubmitter ??
             (client as? any RemoteTaskInstructionSubmitting)
         self.manualLinkStore = manualLinkStore
@@ -138,6 +142,26 @@ final class MonitorViewModel: ObservableObject {
     }
 
     private func archiveDoneTasksAutomaticallyIfNeeded() async {
+        if let familyArchiveWorkflow, automaticallyArchiveDoneTasks() {
+            do {
+                let result = try await familyArchiveWorkflow.performMaintenance()
+                if let refreshedSnapshot = result.refreshedSnapshot {
+                    apply(refreshedSnapshot)
+                }
+                if result.receipt.archivedTaskCount > 0 {
+                    archiveNotice = "완료된 작업 묶음을 서버에 안전하게 보관했습니다."
+                }
+                familyArchiveDiagnostic = nil
+            } catch let error as RemoteTaskFamilyArchiveWorkflowError {
+                familyArchiveDiagnostic = error.localizedDescription
+            } catch is CancellationError {
+                familyArchiveDiagnostic = nil
+            } catch {
+                familyArchiveDiagnostic = "완료 작업 보관을 확인하지 못했습니다. 다음 새로고침에서 다시 확인합니다."
+            }
+            return
+        }
+
         guard let archiveWorkflow else { return }
 
         while automaticallyArchiveDoneTasks() {

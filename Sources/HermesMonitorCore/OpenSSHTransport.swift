@@ -29,6 +29,7 @@ public enum OpenSSHTransportError: Error, LocalizedError {
     case missingAskPassHelper
     case missingSnapshotHelper
     case missingTaskInstructionHelper
+    case missingTaskFamilyArchiveHelper
 
     public var errorDescription: String? {
         switch self {
@@ -52,6 +53,8 @@ public enum OpenSSHTransportError: Error, LocalizedError {
             return "The bundled remote SQLite snapshot helper is missing."
         case .missingTaskInstructionHelper:
             return "The bundled Astra instruction helper is missing."
+        case .missingTaskFamilyArchiveHelper:
+            return "The bundled task-family archive helper is missing."
         }
     }
 }
@@ -70,7 +73,7 @@ enum RemoteSQLiteSnapshotResource {
     }
 }
 
-public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving, RemoteTaskInstructionSubmitting, @unchecked Sendable {
+public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving, RemoteTaskInstructionSubmitting, RemoteTaskFamilyArchiving, @unchecked Sendable {
     private static let snapshotProcessTimeoutSeconds: TimeInterval = 20
     private static let archiveProcessTimeoutSeconds: TimeInterval = 20
     private static let instructionProcessTimeoutSeconds: TimeInterval = 20
@@ -191,6 +194,33 @@ public final class OpenSSHTransport: RemoteFileTransport, RemoteKanbanArchiving,
                     output,
                     expectedInstructionID: request.instructionID
                 )
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    public func archiveCompletedTaskFamilies(
+        _ request: RemoteTaskFamilyArchiveRequest
+    ) async throws -> RemoteTaskFamilyArchiveReceipt {
+        guard let helperURL = TaskFamilyArchiveHelperResource.url else {
+            throw OpenSSHTransportError.missingTaskFamilyArchiveHelper
+        }
+        let helper = try String(contentsOf: helperURL, encoding: .utf8)
+        let payload = try TaskFamilyArchiveCodec.encode(request)
+        let remoteCommand = HermesTaskFamilyArchiveCommand.remoteCommand(helper: helper)
+        let cancellation = ProcessCancellationController()
+
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .utility) { [self] in
+                try cancellation.checkCancellation()
+                let output = try runBoundedInstructionSSH(
+                    remoteCommand: remoteCommand,
+                    payload: payload,
+                    message: "",
+                    cancellation: cancellation
+                )
+                return try TaskFamilyArchiveCodec.decodeReceipt(output)
             }.value
         } onCancel: {
             cancellation.cancel()

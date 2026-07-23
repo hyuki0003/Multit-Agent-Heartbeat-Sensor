@@ -12,7 +12,8 @@ var packageTargets: [Target] = [
         dependencies: ["CSQLite"],
         resources: [
             .copy("Resources/RemoteSQLiteSnapshot.py"),
-            .copy("Resources/TaskInstructionHelper.py")
+            .copy("Resources/TaskInstructionHelper.py"),
+            .copy("Resources/TaskFamilyArchiveHelper.py")
         ],
         linkerSettings: [
             .linkedFramework("Security", .when(platforms: [.macOS]))

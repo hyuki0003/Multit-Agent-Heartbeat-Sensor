@@ -29,6 +29,196 @@ final class RemoteTaskInstructionSubmittingTests: XCTestCase {
         XCTAssertEqual(object["client_source"] as? String, "hermes-monitor")
     }
 
+    func testPendingTaskWithHistoryEncodesExplicitNullRunBinding() throws {
+        let task = KanbanTask(
+            id: "t_b672f7a7",
+            title: "Pending",
+            status: .ready,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let historicalRun = TaskRun(
+            id: 9,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 100),
+            endedAt: Date(timeIntervalSince1970: 101),
+            outcome: .completed
+        )
+        let correlated = try XCTUnwrap(
+            TaskCorrelator().correlate(tasks: [task], runs: [historicalRun], sessions: []).first
+        )
+
+        XCTAssertEqual(correlated.currentRun?.id, historicalRun.id)
+        let request = try RemoteTaskInstructionRequest(
+            task: correlated,
+            message: "대기 중인 작업을 진행해 주세요.",
+            instructionID: UUID(uuidString: "21111111-2222-4333-8444-555555555555")!
+        )
+        let payload = try TaskInstructionCodec.encode(request)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        )
+
+        XCTAssertEqual(Set(object.keys), [
+            "instruction_id", "task_id", "message", "run_id", "selected_option_id", "client_source"
+        ])
+        XCTAssertTrue(object["run_id"] is NSNull)
+    }
+
+    func testBlockedTaskBindsNewestDurableRunIDInsteadOfDisplayRun() throws {
+        let task = KanbanTask(
+            id: "t_b672f7a7",
+            title: "Blocked",
+            status: .blocked,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let displayRun = TaskRun(
+            id: 9,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .blocked,
+            startedAt: Date(timeIntervalSince1970: 300),
+            endedAt: Date(timeIntervalSince1970: 301),
+            outcome: .blocked
+        )
+        let authoritativeRun = TaskRun(
+            id: 10,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .blocked,
+            startedAt: Date(timeIntervalSince1970: 100),
+            endedAt: Date(timeIntervalSince1970: 101),
+            outcome: .blocked
+        )
+        let correlated = try XCTUnwrap(
+            TaskCorrelator().correlate(
+                tasks: [task],
+                runs: [displayRun, authoritativeRun],
+                sessions: []
+            ).first
+        )
+
+        XCTAssertEqual(correlated.currentRun?.id, displayRun.id)
+        let request = try RemoteTaskInstructionRequest(
+            task: correlated,
+            message: "차단된 실행을 이어서 처리해 주세요."
+        )
+        XCTAssertEqual(request.runID, authoritativeRun.id)
+    }
+
+    func testRunningTaskBindsOnlyExactCurrentRun() throws {
+        let task = KanbanTask(
+            id: "t_b672f7a7",
+            title: "Running",
+            status: .running,
+            createdAt: Date(timeIntervalSince1970: 1),
+            currentRunID: 20
+        )
+        let currentRun = TaskRun(
+            id: 20,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 100)
+        )
+        let newerHistoricalRun = TaskRun(
+            id: 21,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .blocked,
+            startedAt: Date(timeIntervalSince1970: 200),
+            endedAt: Date(timeIntervalSince1970: 201),
+            outcome: .blocked
+        )
+        let correlated = try XCTUnwrap(
+            TaskCorrelator().correlate(
+                tasks: [task],
+                runs: [newerHistoricalRun, currentRun],
+                sessions: []
+            ).first
+        )
+
+        let request = try RemoteTaskInstructionRequest(
+            task: correlated,
+            message: "현재 실행에 지시를 전달해 주세요."
+        )
+        XCTAssertEqual(request.runID, currentRun.id)
+    }
+
+    func testRunningTaskRejectsCrossTaskCurrentRunEvenWithDisplayFallback() throws {
+        let task = KanbanTask(
+            id: "t_b672f7a7",
+            title: "Running",
+            status: .running,
+            createdAt: Date(timeIntervalSince1970: 1),
+            currentRunID: 30
+        )
+        let displayFallback = TaskRun(
+            id: 29,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .blocked,
+            startedAt: Date(timeIntervalSince1970: 200),
+            endedAt: Date(timeIntervalSince1970: 201),
+            outcome: .blocked
+        )
+        let crossTaskRun = TaskRun(
+            id: 30,
+            taskID: "t_aaaaaaaa",
+            profile: "rune-implementer",
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 100)
+        )
+        let correlated = try XCTUnwrap(
+            TaskCorrelator().correlate(
+                tasks: [task],
+                runs: [displayFallback, crossTaskRun],
+                sessions: []
+            ).first
+        )
+
+        XCTAssertEqual(correlated.currentRun?.id, displayFallback.id)
+        XCTAssertThrowsError(
+            try RemoteTaskInstructionRequest(task: correlated, message: "전달하면 안 됩니다.")
+        ) { error in
+            XCTAssertEqual(
+                error as? TaskInstructionValidationError,
+                .unavailableTaskBinding(task.id)
+            )
+        }
+    }
+
+    func testBlockedTaskRejectsWhenNewestRunHasNoValidBinding() throws {
+        let task = KanbanTask(
+            id: "t_b672f7a7",
+            title: "Blocked without authoritative run",
+            status: .blocked,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let terminalRun = TaskRun(
+            id: 40,
+            taskID: task.id,
+            profile: "rune-implementer",
+            status: .done,
+            startedAt: Date(timeIntervalSince1970: 100),
+            endedAt: Date(timeIntervalSince1970: 101),
+            outcome: .completed
+        )
+        let correlated = try XCTUnwrap(
+            TaskCorrelator().correlate(tasks: [task], runs: [terminalRun], sessions: []).first
+        )
+
+        XCTAssertThrowsError(
+            try RemoteTaskInstructionRequest(task: correlated, message: "전달하면 안 됩니다.")
+        ) { error in
+            XCTAssertEqual(
+                error as? TaskInstructionValidationError,
+                .unavailableTaskBinding(task.id)
+            )
+        }
+    }
+
     func testRequestRejectsInvalidTaskIDsEmptyMessagesAndOversizedUTF8() {
         let invalidTaskIDs = ["", "t_1", "t_B672F7A7", "t_b672f7ag", "../t_b672f7a7", "t_b672f7a7;id"]
         for taskID in invalidTaskIDs {

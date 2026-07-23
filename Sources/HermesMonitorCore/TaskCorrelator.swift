@@ -18,6 +18,7 @@ public struct CorrelatedTask: Identifiable, Equatable, Sendable {
     public let parentSession: HermesSession?
     public let evidence: [String]
     public let workerLogRemotePath: String
+    public let instructionBinding: TaskInstructionBinding
 
     public var isUncertain: Bool {
         [runConfidence, sessionConfidence].contains(.inferred) ||
@@ -33,7 +34,8 @@ public struct CorrelatedTask: Identifiable, Equatable, Sendable {
         sessionConfidence: MappingConfidence,
         parentSession: HermesSession?,
         evidence: [String],
-        workerLogRemotePath: String
+        workerLogRemotePath: String,
+        instructionBinding: TaskInstructionBinding = .unavailable
     ) {
         self.task = task
         self.currentRun = currentRun
@@ -43,6 +45,7 @@ public struct CorrelatedTask: Identifiable, Equatable, Sendable {
         self.parentSession = parentSession
         self.evidence = evidence
         self.workerLogRemotePath = workerLogRemotePath
+        self.instructionBinding = instructionBinding
     }
 }
 
@@ -108,8 +111,42 @@ public struct TaskCorrelator: Sendable {
                 sessionConfidence: sessionResolution.confidence,
                 parentSession: parentSession,
                 evidence: evidence,
-                workerLogRemotePath: logPath
+                workerLogRemotePath: logPath,
+                instructionBinding: resolveInstructionBinding(
+                    for: task,
+                    runsForTask: runsByTask[task.id] ?? []
+                )
             )
+        }
+    }
+
+    private func resolveInstructionBinding(
+        for task: KanbanTask,
+        runsForTask: [TaskRun]
+    ) -> TaskInstructionBinding {
+        switch task.status {
+        case .todo, .ready:
+            return .unbound
+        case .running:
+            guard let currentRunID = task.currentRunID,
+                  let currentRun = runsForTask.first(where: { $0.id == currentRunID }),
+                  currentRun.status == .running,
+                  currentRun.outcome == nil,
+                  currentRun.endedAt == nil else {
+                return .unavailable
+            }
+            return .run(currentRunID)
+        case .blocked:
+            guard task.currentRunID == nil,
+                  let latest = runsForTask.max(by: { $0.id < $1.id }),
+                  latest.status == .blocked,
+                  latest.outcome == .blocked,
+                  latest.endedAt != nil else {
+                return .unavailable
+            }
+            return .run(latest.id)
+        case .done, .archived:
+            return .unavailable
         }
     }
 
