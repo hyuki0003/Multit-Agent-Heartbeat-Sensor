@@ -122,6 +122,20 @@ class TaskFamilyArchiveHelperIntegrationTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def logical_dump(self):
+        connection = sqlite3.connect(self.database)
+        try:
+            return "\n".join(connection.iterdump())
+        finally:
+            connection.close()
+
+    def add_comment(self, task_id, body):
+        self.execute(
+            "INSERT INTO task_comments(task_id, author, body, created_at) "
+            "VALUES (?, 'test', ?, 1)",
+            (task_id, body),
+        )
+
     def test_archives_standalone_done_task_with_canonical_event_and_keeps_audit_rows(self):
         task_id = self.create_task("standalone-done")
         connection = sqlite3.connect(self.database)
@@ -249,6 +263,124 @@ class TaskFamilyArchiveHelperIntegrationTests(unittest.TestCase):
         self.assertEqual(
             self.query("SELECT COUNT(*) FROM tasks WHERE status='archived'"),
             [(0,)],
+        )
+
+    def test_archived_bridge_defers_done_ancestor_of_running_descendant_without_writes(self):
+        done_root = self.create_task("archived-bridge-running-root")
+        archived_bridge = self.create_task("archived-bridge-running-middle")
+        running_child = self.create_task(
+            "archived-bridge-running-child", status="running"
+        )
+        self.link(done_root, archived_bridge)
+        self.link(archived_bridge, running_child)
+        self.add_comment(done_root, "retain-running-bridge-comment")
+        self.archive_canonically(archived_bridge)
+        before = self.logical_dump()
+
+        result = self.invoke()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["outcome"], "noop")
+        self.assertEqual(receipt["archived_task_ids"], [])
+        self.assertEqual(receipt["deferred_family_count"], 1)
+        self.assertEqual(self.logical_dump(), before)
+
+    def test_archived_bridge_shared_with_blocked_parent_defers_family_without_writes(self):
+        done_parent = self.create_task("archived-shared-done-parent")
+        blocked_parent = self.create_task(
+            "archived-shared-blocked-parent", status="blocked"
+        )
+        archived_child = self.create_task("archived-shared-child")
+        self.link(done_parent, archived_child)
+        self.link(blocked_parent, archived_child)
+        self.add_comment(archived_child, "retain-shared-bridge-comment")
+        self.archive_canonically(archived_child)
+        before = self.logical_dump()
+
+        result = self.invoke()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["outcome"], "noop")
+        self.assertEqual(receipt["archived_task_ids"], [])
+        self.assertEqual(receipt["deferred_family_count"], 1)
+        self.assertEqual(self.logical_dump(), before)
+
+    def test_rejects_cycle_containing_archived_vertex_without_writes(self):
+        done_task = self.create_task("archived-cycle-done")
+        archived_task = self.create_task("archived-cycle-middle")
+        self.link(done_task, archived_task)
+        self.archive_canonically(archived_task)
+        self.execute(
+            "INSERT INTO task_links(parent_id, child_id) VALUES (?, ?)",
+            (archived_task, done_task),
+        )
+        self.add_comment(archived_task, "retain-archived-cycle-comment")
+        before = self.logical_dump()
+
+        result = self.invoke()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["outcome"], "rejected")
+        self.assertEqual(receipt["reason"], "malformed_graph")
+        self.assertEqual(receipt["archived_task_ids"], [])
+        self.assertEqual(self.logical_dump(), before)
+
+    def test_archives_remaining_done_members_connected_through_archived_bridge(self):
+        done_root = self.create_task("archived-done-bridge-root")
+        archived_bridge = self.create_task("archived-done-bridge-middle")
+        done_child = self.create_task("archived-done-bridge-child")
+        self.link(done_root, archived_bridge)
+        self.link(archived_bridge, done_child)
+        self.add_comment(done_root, "retain-done-bridge-root-comment")
+        self.add_comment(archived_bridge, "retain-done-bridge-middle-comment")
+        self.add_comment(done_child, "retain-done-bridge-child-comment")
+        self.archive_canonically(archived_bridge)
+        links_before = self.query(
+            "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+        )
+        comments_before = self.query(
+            "SELECT task_id, author, body, created_at FROM task_comments ORDER BY id"
+        )
+        events_before = self.query(
+            "SELECT id, task_id, kind, payload, created_at FROM task_events ORDER BY id"
+        )
+
+        result = self.invoke()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["outcome"], "archived")
+        self.assertEqual(receipt["archived_family_count"], 1)
+        self.assertEqual(receipt["archived_task_ids"], [done_child, done_root])
+        self.assertEqual(
+            self.query(
+                "SELECT status FROM tasks WHERE id IN (?, ?, ?) ORDER BY id",
+                (done_root, archived_bridge, done_child),
+            ),
+            [("archived",), ("archived",), ("archived",)],
+        )
+        self.assertEqual(
+            self.query(
+                "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+            ),
+            links_before,
+        )
+        self.assertEqual(
+            self.query(
+                "SELECT task_id, author, body, created_at FROM task_comments ORDER BY id"
+            ),
+            comments_before,
+        )
+        events_after = self.query(
+            "SELECT id, task_id, kind, payload, created_at FROM task_events ORDER BY id"
+        )
+        self.assertEqual(events_after[: len(events_before)], events_before)
+        self.assertEqual(
+            [(row[1], row[2]) for row in events_after[len(events_before) :]],
+            [(done_child, "archived"), (done_root, "archived")],
         )
 
     def test_partial_prior_archive_retries_remaining_family_member(self):

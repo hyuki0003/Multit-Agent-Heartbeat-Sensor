@@ -106,13 +106,12 @@ def _plan(conn: Any, max_families: int, max_tasks: int) -> tuple[list[list[str]]
     for link in links:
         parent_id = link["parent_id"]
         child_id = link["child_id"]
-        if parent_id in active_ids and child_id in active_ids:
-            children[parent_id].add(child_id)
-            parents[child_id].add(parent_id)
-            neighbors[parent_id].add(child_id)
-            neighbors[child_id].add(parent_id)
+        children[parent_id].add(child_id)
+        parents[child_id].add(parent_id)
+        neighbors[parent_id].add(child_id)
+        neighbors[child_id].add(parent_id)
 
-    indegree = {task_id: len(parents[task_id]) for task_id in active_ids}
+    indegree = {task_id: len(parents[task_id]) for task_id in tasks}
     ready = sorted(task_id for task_id, degree in indegree.items() if degree == 0)
     topological: list[str] = []
     while ready:
@@ -123,11 +122,11 @@ def _plan(conn: Any, max_families: int, max_tasks: int) -> tuple[list[list[str]]
             if indegree[child_id] == 0:
                 ready.append(child_id)
                 ready.sort()
-    if len(topological) != len(active_ids):
+    if len(topological) != len(tasks):
         raise GraphError("malformed_graph")
 
     components: list[set[str]] = []
-    unseen = set(active_ids)
+    unseen = set(tasks)
     while unseen:
         start = min(unseen)
         component: set[str] = set()
@@ -141,6 +140,8 @@ def _plan(conn: Any, max_families: int, max_tasks: int) -> tuple[list[list[str]]
             stack.extend(neighbors[task_id] - component)
         components.append(component)
 
+    components = [component for component in components if component & active_ids]
+
     def component_key(component: set[str]) -> tuple[int, str]:
         roots = sorted(task_id for task_id in component if not (parents[task_id] & component))
         root_rows = [tasks[task_id] for task_id in roots]
@@ -150,16 +151,20 @@ def _plan(conn: Any, max_families: int, max_tasks: int) -> tuple[list[list[str]]
     eligible = [
         component
         for component in components
-        if all(tasks[task_id]["status"] == "done" for task_id in component)
+        if all(
+            tasks[task_id]["status"] == "done"
+            for task_id in component & active_ids
+        )
     ]
     selected: list[list[str]] = []
     selected_ids: set[str] = set()
     for component in eligible:
-        if len(selected) >= max_families or len(selected_ids) + len(component) > max_tasks:
+        targets = component & active_ids
+        if len(selected) >= max_families or len(selected_ids) + len(targets) > max_tasks:
             continue
-        order = [task_id for task_id in reversed(topological) if task_id in component]
+        order = [task_id for task_id in reversed(topological) if task_id in targets]
         selected.append(order)
-        selected_ids.update(component)
+        selected_ids.update(targets)
     bounded = len(selected) < len(eligible)
     deferred_count = len(components) - len(selected)
     return selected, deferred_count, bounded
